@@ -1,0 +1,23 @@
+name: Release library setup
+description: >-
+  Exports RELEASE_LIB, the path of this repository's release-lib.sh, for the job's
+  later steps, so a workflow or script sources the shared release helpers without a
+  copy of its own: source "${RELEASE_LIB}". A job that runs release-candidate-version
+  already has RELEASE_LIB and does not need this action.
+
+outputs:
+  lib:
+    description: The path of release-lib.sh (the same value as RELEASE_LIB)
+    value: ${{ steps.lib.outputs.lib }}
+
+runs:
+  using: composite
+  steps:
+    - id: lib
+      shell: bash
+      env:
+        LIB: ${{ github.action_path }}/../release-lib.sh
+      run: |
+        lib="$(realpath -e "${LIB}")"
+        echo "RELEASE_LIB=${lib}" >> "$GITHUB_ENV"
+        echo "lib=${lib}" >> "$GITHUB_OUTPUT"

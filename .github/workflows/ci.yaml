@@ -1,0 +1,65 @@
+# Tests for release-lib.sh and the two actions. Pushes to main run it through the
+# Release workflow, which tags only after it passes.
+name: CI
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # release-candidate-version reads the commit history and tags.
+          fetch-depth: 0
+
+      - name: Shellcheck
+        run: shellcheck -x release-lib.sh tests/*.sh
+
+      - name: Test release-lib.sh
+        run: bash tests/test-release-lib.sh
+
+      - name: Run the setup action
+        id: setup
+        uses: ./setup
+
+      - name: Check the setup action's RELEASE_LIB
+        env:
+          LIB_OUTPUT: ${{ steps.setup.outputs.lib }}
+        run: |
+          test "${RELEASE_LIB}" = "$(realpath release-lib.sh)"
+          test "${LIB_OUTPUT}" = "${RELEASE_LIB}"
+          # shellcheck source=/dev/null
+          source "${RELEASE_LIB}"
+          rl_is_rc 0.1.0-rc.1
+
+      - name: Clear RELEASE_LIB
+        run: echo "RELEASE_LIB=" >> "$GITHUB_ENV"
+
+      - name: Run the release-candidate-version action
+        id: version
+        uses: ./release-candidate-version
+        with:
+          tag_prefix: "v"
+
+      - name: Check the release-candidate-version outputs
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          VERSION_TAG: ${{ steps.version.outputs.version_tag }}
+          RELEASE_CREATED: ${{ steps.version.outputs.release_created }}
+        run: |
+          echo "version=${VERSION} tag=${VERSION_TAG} release_created=${RELEASE_CREATED}"
+          test "${RELEASE_LIB}" = "$(realpath release-lib.sh)"
+          [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]
+          test "${VERSION_TAG}" = "v${VERSION}"
+          [[ "${RELEASE_CREATED}" =~ ^(true|false)$ ]]
