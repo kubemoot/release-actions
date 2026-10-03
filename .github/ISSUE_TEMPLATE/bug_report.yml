@@ -1,0 +1,60 @@
+name: Bug report
+description: A shared GitHub Action fails or misbehaves.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: "This repository covers the shared GitHub Actions used by the Kubemoot repositories (setup and release-candidate-version). Problems in Kubemoot itself belong in [kubemoot/kubemoot](https://github.com/kubemoot/kubemoot/issues/new/choose); questions go to [Discussions](https://github.com/orgs/kubemoot/discussions/categories/q-a)."
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Before you file
+      options:
+        - label: I searched existing issues and did not find this one
+          required: true
+  - type: dropdown
+    id: action
+    attributes:
+      label: Which action
+      options:
+        - setup
+        - release-candidate-version
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: run-url
+    attributes:
+      label: Workflow run URL
+      description: The run of the consuming workflow that shows the problem.
+      placeholder: The address of the run in the Actions tab
+    validations:
+      required: true
+  - type: input
+    id: pinned
+    attributes:
+      label: Version or sha pinned
+      placeholder: "The ref after the @ in your uses line"
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From the failing step of the run.
+      render: shell
+    validations:
+      required: false
