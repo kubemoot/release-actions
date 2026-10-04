@@ -65,10 +65,14 @@ An image of another repository is written in a values file with the tag `0.0.0`
   released images (a release candidate build of a crew chart).
 - `rl_stamp_images_like VALUES REFERENCE` gives each one the tag `REFERENCE` (another
   values file) has for it, so a promoted chart pins exactly what its candidate ran.
+- `rl_stamp_local_images VALUES COMMIT rc|final` gives each one the version of the
+  latest `NAME-vX.Y.Z-rc.N` (or final `NAME-vX.Y.Z`) tag of this repository reachable
+  from `COMMIT`, for a chart that pins images the same repository builds (Kubemoot's
+  operator chart and its components).
 
-Both resolve every image before changing the file and fail on an image they cannot
-resolve; `rl_stamp_image`, `rl_image_placeholders`, `rl_image_tag`, and
-`rl_latest_remote_final` are the pieces they use.
+All of them resolve every image before changing the file and fail on an image they
+cannot resolve; `rl_stamp_image`, `rl_image_placeholders`, `rl_image_tag`,
+`rl_latest_remote_final`, and `rl_latest_version` are the pieces they use.
 
 ## Versions
 

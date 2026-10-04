@@ -252,6 +252,32 @@ check "held version when allowed" "1.0.0-rc.2" "$(rl_held_version agent-v 1.0.0-
 check_status "tag exists" 0 rl_tag_exists v0.2.0
 check_status "tag missing" 1 rl_tag_exists v9.9.9
 
+# rl_latest_version and rl_stamp_local_images: images this repository builds.
+check "latest local candidate" "0.2.0-rc.10" "$(rl_latest_version v "$c4" rc)"
+check "latest local candidate at an older commit" "0.2.0-rc.9" "$(rl_latest_version v "$c3" rc)"
+check "latest local final" "0.9.0" "$(rl_latest_version agent-v "$c4" final)"
+check_status "no local tag of the kind fails" 1 rl_latest_version agent-v "$c3" final
+check_status "an unknown prefix fails" 1 rl_latest_version none-v "$c4" rc
+check_status "a kind other than rc or final fails" 1 rl_latest_version v "$c4" latest
+check_status "a missing commit fails" 1 rl_latest_version v 0000000000000000000000000000000000000000 rc
+check_status "an empty prefix fails" 1 rl_latest_version "" "$c4" rc
+local_values="$(mktemp)"
+printf '%s\n' "a:" "  image: agent:0.0.0" "b:" "  image: \"ghcr.io/kubemoot/agent:0.0.0\"" \
+  "c:" "  image: quay.io/acme/other:1.2.3" > "$local_values"
+got="$(rl_stamp_local_images "$local_values" "$c4" rc 2>/dev/null)"
+check "local candidate resolved" "agent 0.9.0-rc.1" "$got"
+check "local candidate stamped everywhere" "2" "$(grep -c 'agent:0.9.0-rc.1' "$local_values")"
+check "third-party image untouched" "1" "$(grep -c 'other:1.2.3' "$local_values")"
+printf 'image: agent:0.0.0\n' > "$local_values"
+check "local final resolved" "agent 0.9.0" "$(rl_stamp_local_images "$local_values" "$c4" final 2>/dev/null)"
+printf 'image: agent:0.0.0\nimage: unbuilt:0.0.0\n' > "$local_values"
+check_status "an image with no local tag fails" 1 rl_stamp_local_images "$local_values" "$c4" rc
+check "and leaves the file unchanged" "2" "$(grep -c ':0.0.0' "$local_values")"
+check_status "a bad kind fails the stamp" 1 rl_stamp_local_images "$local_values" "$c4" newest
+printf 'image: agent:0.4.2\n' > "$local_values"
+check "a file without placeholders is left alone" "" "$(rl_stamp_local_images "$local_values" "$c4" rc)"
+rm -f "$local_values"
+
 check "release needed for a new candidate" "release_created=true" "$(needed v 0.3.0-rc.1 true false)"
 check "no release without changes" "release_created=false" "$(needed v 0.3.0-rc.1 false false)"
 check "forced release without changes" "release_created=true" "$(needed v 0.3.0-rc.1 false true)"

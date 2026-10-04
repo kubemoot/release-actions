@@ -293,6 +293,42 @@ rl_stamp_images_like() {
   rl_stamp_images_with "$1" rl_image_tag "$2"
 }
 
+# rl_latest_version PREFIX COMMIT KIND: the version (PREFIX removed) of the highest
+# <prefix>X.Y.Z-rc.N tag (KIND rc) or <prefix>X.Y.Z tag (KIND final) reachable from
+# COMMIT in this repository. Fails when COMMIT is not a commit, KIND is neither, or no
+# such tag exists.
+rl_latest_version() {
+  local prefix="${1:-}" commit="${2:-}" kind="${3:-}" tag
+  if [ -z "$prefix" ] || ! git rev-parse -q --verify "${commit}^{commit}" >/dev/null; then
+    echo "ERROR: a tag prefix and a commit are required, got [${prefix}] [${commit}]" >&2
+    return 1
+  fi
+  case "$kind" in
+    rc) tag="$(rl_latest_rc "$prefix" "$commit")" ;;
+    final) tag="$(rl_latest_final "$prefix" "$commit")" ;;
+    *) echo "ERROR: the kind of version is rc or final, not [${kind}]" >&2; return 1 ;;
+  esac
+  if [ -z "$tag" ]; then
+    echo "ERROR: no ${kind} ${prefix}X.Y.Z tag reachable from ${commit}" >&2
+    return 1
+  fi
+  printf '%s\n' "${tag#"$prefix"}"
+}
+
+_rl_local_version_of() {
+  rl_latest_version "${3}-v" "$1" "$2"
+}
+
+# rl_stamp_local_images FILE COMMIT KIND: stamps every NAME:0.0.0 image in FILE with the
+# version of the latest NAME-vX.Y.Z-rc.N (KIND rc) or NAME-vX.Y.Z (KIND final) tag of
+# this repository reachable from COMMIT, for a chart that pins images the same
+# repository builds: a release candidate chart takes the candidates the homelab runs,
+# and a reference to the public registry, which holds finals only, takes a final.
+# Prints "NAME VERSION" per image; a file without placeholders is left alone.
+rl_stamp_local_images() {
+  rl_stamp_images_with "$1" _rl_local_version_of "$2" "$3"
+}
+
 # rl_resolve_point REF: the commit a promotion starts from. "latest" (or empty) is
 # the tip of origin/main; otherwise REF must be a release-candidate tag on main.
 rl_resolve_point() {
