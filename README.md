@@ -1,5 +1,7 @@
 # release-actions
 
+[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/kubemoot/release-actions?label=openssf%20scorecard)](https://scorecard.dev/viewer/?uri=github.com/kubemoot/release-actions)
+
 The release pipeline pieces that every Kubemoot repository shares, kept in one place:
 
 | Path | What it is |
