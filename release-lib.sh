@@ -137,12 +137,13 @@ rl_resolve_point() {
   printf '%s\n' "$commit"
 }
 
-# rl_notes_document PREV SRC FINAL: the release body: the user-facing notes since PREV,
-# a single line when there are none, and a link to every commit when the repository is
-# known (GITHUB_SERVER_URL and GITHUB_REPOSITORY, set in Actions).
+# rl_notes_document PREV SRC FINAL [PATH]: the release body: the user-facing notes since
+# PREV (limited to PATH when given), a single line when there are none, and a link to
+# every commit when the repository is known (GITHUB_SERVER_URL and GITHUB_REPOSITORY, set
+# in Actions).
 rl_notes_document() {
   local prev="$1" src="$2" final="$3" notes
-  notes="$(rl_release_notes "$prev" "$src")"
+  notes="$(rl_release_notes "$prev" "$src" "${4:-}")"
   echo "## Changes${prev:+ since ${prev}}"
   echo
   if [ -n "$notes" ]; then printf '%s\n\n' "$notes"; else printf 'No user-facing changes: maintenance only.\n\n'; fi

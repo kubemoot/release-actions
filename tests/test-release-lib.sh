@@ -145,6 +145,7 @@ check "document says when nothing affects users" "1" "$(grep -c '^No user-facing
 check "document links every commit" "1" "$(grep -c '^All commits: https://github.com/acme/thing/compare/'"$m0"'...v9.9.9$' <<<"$doc")"
 check "document without a repository has no link" "0" "$(GITHUB_REPOSITORY='' rl_notes_document "$m0" "$m1" v9.9.9 | grep -c 'All commits' || true)"
 check "document separates the notes from the link" "1" "$(GITHUB_REPOSITORY=acme/thing rl_notes_document "$m1" HEAD v9.9.10 | grep -B1 '^All commits' | head -1 | grep -c '^$')"
+check "document limited to a path" "1" "$(rl_notes_document "$m1" HEAD v9.9.10 some/path | grep -c '^No user-facing changes')"
 git reset -q --hard "$bot"
 
 check "notes limited to a path" "" "$(rl_release_notes v0.1.0 "$c4" some/path)"
