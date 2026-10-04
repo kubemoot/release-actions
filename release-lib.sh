@@ -518,16 +518,23 @@ rl_add_release() {
   printf '%s\t%s\t%s\n' "$2" "$3" "$4" >> "$1/releases.tsv"
 }
 
-# rl_promote_single PREFIX TITLE OUT_DIR: promote the latest release candidate of a
-# repository with one version stream (kmctl, kubemoot-docs), up to RC_TAG ("latest"
-# or a candidate tag on main). Plans the final <prefix>X.Y.Z tag on the candidate's
-# commit, writes OUT_DIR/notes.md and OUT_DIR/releases.tsv, pushes the tag unless
-# DRY_RUN, and prints final_tag=, previous_tag=, and commit= lines for $GITHUB_OUTPUT
-# (everything else goes to stderr).
+# rl_promote_single PREFIX TITLE OUT_DIR: promote a release candidate of a repository
+# with one version stream (kmctl, kubemoot-docs). RC_TAG names it: a <prefix>X.Y.Z-rc.N
+# tag on main is promoted as named; "latest" (or another prefix's tag) takes the highest
+# candidate reachable from that point. Plans the final <prefix>X.Y.Z tag on the
+# candidate's commit, writes OUT_DIR/notes.md and OUT_DIR/releases.tsv, pushes the tag
+# unless DRY_RUN, and prints final_tag=, previous_tag=, commit=, and rc_tag= lines for
+# $GITHUB_OUTPUT (everything else goes to stderr).
 rl_promote_single() {
   local prefix="$1" title="$2" out="$3" point rc_tag final src prev
   point=$(rl_resolve_point "${RC_TAG:-latest}") || return 1
-  rc_tag=$(rl_latest_rc "$prefix" "$point")
+  # A commit can carry several candidates (a forced rebuild): a named candidate of this
+  # prefix is promoted as named; "latest" takes the highest one.
+  if [[ "${RC_TAG:-}" == "${prefix}"* ]] && rl_is_rc "${RC_TAG#"$prefix"}"; then
+    rc_tag="$RC_TAG"
+  else
+    rc_tag=$(rl_latest_rc "$prefix" "$point")
+  fi
   if [ -z "$rc_tag" ]; then
     echo "ERROR: no ${prefix}X.Y.Z-rc.N tag at or before ${RC_TAG:-latest}" >&2
     return 1
@@ -546,5 +553,5 @@ rl_promote_single() {
   rl_add_release "$out" "$final" "${title} ${final#"$prefix"}" notes.md
   rl_make_tag "$final" "$rc_tag"
   rl_push_new_tags >&2
-  printf 'final_tag=%s\nprevious_tag=%s\ncommit=%s\n' "$final" "$prev" "$src"
+  printf 'final_tag=%s\nprevious_tag=%s\ncommit=%s\nrc_tag=%s\n' "$final" "$prev" "$src" "$rc_tag"
 }
