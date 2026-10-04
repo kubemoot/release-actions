@@ -13,7 +13,9 @@ inputs:
     required: false
     default: ''
   force:
-    description: '"true" builds a candidate even without new commits'
+    description: >-
+      "true" builds a candidate even without new commits, as the next free rc.N (the
+      next patch's rc.0 when the commit's version is promoted)
     required: false
     default: 'false'
   allow_major:
@@ -28,7 +30,7 @@ outputs:
     description: The candidate version, X.Y.Z-rc.N
     value: ${{ steps.hold.outputs.version }}
   version_tag:
-    description: The candidate tag, <tag_prefix>X.Y.Z-rc.N
+    description: The candidate tag, <tag_prefix>X.Y.Z-rc.N (never one that already exists elsewhere)
     value: ${{ inputs.tag_prefix }}${{ steps.hold.outputs.version }}
   release_created:
     description: '"true" when the candidate should be built'
@@ -60,18 +62,22 @@ runs:
         search_commit_body: true
         change_path: ${{ inputs.change_path }}
 
-    # A breaking change on 0.x bumps the minor version (rl_hold_zero_major).
+    # A breaking change on 0.x bumps the minor version (rl_hold_zero_major). The
+    # candidate never reuses a taken rc.N: a forced rebuild of an unchanged commit gets
+    # the next free one (rl_free_rc).
     - id: hold
       shell: bash
       env:
         PREFIX: ${{ inputs.tag_prefix }}
         VERSION: ${{ steps.version.outputs.version }}
         ALLOW_MAJOR: ${{ inputs.allow_major }}
+        FORCE: ${{ inputs.force }}
       run: |
         # shellcheck source=/dev/null
         source "${RELEASE_LIB}"
         held="$(rl_held_version "${PREFIX}" "${VERSION}" "${ALLOW_MAJOR}")"
-        echo "version=${held}" >> "$GITHUB_OUTPUT"
+        free="$(rl_free_rc "${PREFIX}" "${held}" "${FORCE}")"
+        echo "version=${free}" >> "$GITHUB_OUTPUT"
 
     - id: check
       shell: bash

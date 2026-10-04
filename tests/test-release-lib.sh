@@ -252,6 +252,52 @@ check "held version when allowed" "1.0.0-rc.2" "$(rl_held_version agent-v 1.0.0-
 check_status "tag exists" 0 rl_tag_exists v0.2.0
 check_status "tag missing" 1 rl_tag_exists v9.9.9
 
+# rl_free_rc: candidates never share a version and only grow within an X.Y.Z.
+git tag -a free-v0.3.0 -m final "$c3"
+git tag -a free-v0.4.0-rc.2 -m rc "$c3"
+git tag -a free-v0.4.0-rc.5 -m rc "$c4"
+git tag -a xfree-v0.4.0-rc.99 -m rc "$c4"
+git tag -a free-v0.4.0-rc.9x -m rc "$c4"
+check "free: a computed version that is free is kept" "0.4.0-rc.6" "$(rl_free_rc free-v 0.4.0-rc.6 false "$c4")"
+check "free: a re-run on the tagged commit keeps its version" "0.4.0-rc.5" "$(rl_free_rc free-v 0.4.0-rc.5 false "$c4")"
+check "free: a version taken by another commit moves up" "0.4.0-rc.6" "$(rl_free_rc free-v 0.4.0-rc.2 false "$c4")"
+check "free: a free version below the highest moves up" "0.4.0-rc.6" "$(rl_free_rc free-v 0.4.0-rc.3 false "$c4")"
+check "free: a forced rebuild of a tagged commit gets the next rc" "0.4.0-rc.6" "$(rl_free_rc free-v 0.4.0-rc.5 true "$c4")"
+check "free: a forced free version is kept" "0.4.0-rc.8" "$(rl_free_rc free-v 0.4.0-rc.8 true "$c4")"
+check "free: a forced rebuild of a promoted version starts the next patch" "0.3.1-rc.0" "$(rl_free_rc free-v 0.3.0-rc.0 true "$c3")"
+check "free: and the promoted candidate is still skipped unforced" "0.3.0-rc.0" "$(rl_free_rc free-v 0.3.0-rc.0 false "$c3")"
+check "free: unforced candidate of a promoted version is not released" "release_created=false" \
+  "$(needed free-v "$(rl_free_rc free-v 0.3.0-rc.0 false "$c3")" true false)"
+check "free: forced candidate after a promotion is released" "release_created=true" \
+  "$(needed free-v "$(rl_free_rc free-v 0.3.0-rc.0 true "$c3")" false true)"
+git tag -a free-v0.3.1-rc.0 -m rc "$c4"
+check "free: the next patch counts its own candidates" "0.3.1-rc.1" "$(rl_free_rc free-v 0.3.0-rc.0 true "$c3")"
+git tag -a free-v0.4.0-rc.10 -m rc "$c4"
+check "free: rc.10 counts above rc.9" "0.4.0-rc.11" "$(rl_free_rc free-v 0.4.0-rc.9 false "$c3")"
+check "free: a zero-padded counter is decimal" "0.4.0-rc.11" "$(rl_free_rc free-v 0.4.0-rc.08 false "$c4")"
+check "free: a version of another X.Y.Z is not moved" "0.5.0-rc.1" "$(rl_free_rc free-v 0.5.0-rc.1 true "$c4")"
+check "free: a non-candidate is unchanged" "0.4.0" "$(rl_free_rc free-v 0.4.0 true "$c4")"
+check "free: an empty version is unchanged" "" "$(rl_free_rc free-v "" true "$c4")"
+check "free: commit defaults to HEAD for a re-run" "0.4.0-rc.10" "$(rl_free_rc free-v 0.4.0-rc.10 false)"
+check "free: commit defaults to HEAD for a forced run" "0.4.0-rc.11" "$(rl_free_rc free-v 0.4.0-rc.10 true)"
+git tag -a free-v0.3.1-rc.1 -m rc "$c4"
+check "free: repeated forced rebuilds of a promoted commit count up" "0.3.1-rc.2" "$(rl_free_rc free-v 0.3.0-rc.0 true "$c3")"
+git tag -a free-v0.3.1 -m final "$c4"
+check "free: when the next patch is promoted too" "0.3.1-rc.2" "$(rl_free_rc free-v 0.3.0-rc.0 true "$c3")"
+check "free: and that candidate is not released" "release_created=false" \
+  "$(needed free-v "$(rl_free_rc free-v 0.3.0-rc.0 true "$c3")" false true)"
+check "free: a zero-major hold onto a minor with candidates moves up" "0.4.0-rc.11" \
+  "$(rl_free_rc free-v "$(rl_held_version free-v 1.0.0-rc.2 false "$c4")" false "$c4")"
+check "free: the glob matches one X.Y.Z only" "0.4.1-rc.0" "$(rl_free_rc free-v 0.4.1-rc.0 false "$c4")"
+check "rc tags of one X.Y.Z, lowest first" "free-v0.4.0-rc.2 free-v0.4.0-rc.5 free-v0.4.0-rc.10" \
+  "$(rl_rc_tags free-v 0.4.0 | paste -sd' ')"
+check "rc tags reachable from a commit" "free-v0.4.0-rc.2" "$(rl_rc_tags free-v 0.4.0 "$c3" | paste -sd' ')"
+check "rc tags with none" "" "$(rl_rc_tags free-v 9.9.9)"
+check "next patch" "0.3.10" "$(rl_next_patch 0.3.9)"
+check_status "tag at its commit" 0 rl_tag_at free-v0.4.0-rc.5 "$c4"
+check_status "tag at another commit" 1 rl_tag_at free-v0.4.0-rc.5 "$c3"
+check_status "missing tag is at no commit" 1 rl_tag_at free-v9.9.9-rc.0 "$c4"
+
 # rl_latest_version and rl_stamp_local_images: images this repository builds.
 check "latest local candidate" "0.2.0-rc.10" "$(rl_latest_version v "$c4" rc)"
 check "latest local candidate at an older commit" "0.2.0-rc.9" "$(rl_latest_version v "$c3" rc)"

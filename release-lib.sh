@@ -81,6 +81,62 @@ rl_release_needed() {
   fi
 }
 
+# rl_free_rc PREFIX VERSION FORCE [COMMIT]: the candidate version to build from the
+# VERSION computed from the commits, so that no two candidates share a version and a new
+# candidate sorts above every earlier candidate of its X.Y.Z, on any branch. A forced
+# rebuild (FORCE=true, for example for content from another repository) of an unchanged
+# commit gets the next free rc.N, and one of a commit whose X.Y.Z is promoted starts
+# X.Y.(Z+1)-rc.0 (if that is promoted too, rl_release_needed skips it). Without FORCE, a
+# re-run on the commit that already carries <prefix>VERSION keeps VERSION, even when a
+# later forced rebuild of that commit took a higher rc.N. A VERSION that is not a
+# candidate is printed unchanged. Two runs of one prefix must not overlap (a workflow
+# concurrency group), or both can pick the same free rc.N.
+rl_free_rc() {
+  local prefix="$1" version="$2" force="$3" commit="${4:-HEAD}" base n highest
+  if ! rl_is_rc "$version"; then
+    printf '%s\n' "$version"
+    return
+  fi
+  base="$(rl_final_of "$version")"
+  n="$((10#${version##*-rc.}))"
+  if [ "$force" = "true" ] && rl_tag_exists "${prefix}${base}"; then
+    base="$(rl_next_patch "$base")"
+    n=0
+  elif [ "$force" != "true" ] && rl_tag_at "${prefix}${version}" "$commit"; then
+    printf '%s\n' "$version"
+    return
+  fi
+  highest="$(rl_rc_tags "$prefix" "$base" | tail -n 1)"
+  if [ -n "$highest" ] && [ "$n" -le "$((10#${highest##*-rc.}))" ]; then
+    n="$((10#${highest##*-rc.} + 1))"
+  fi
+  printf '%s-rc.%s\n' "$base" "$n"
+}
+
+# rl_next_patch X.Y.Z: X.Y.(Z+1).
+rl_next_patch() {
+  local major minor patch
+  IFS=. read -r major minor patch <<<"$1"
+  printf '%s.%s.%s\n' "$major" "$minor" "$((10#${patch} + 1))"
+}
+
+# rl_tag_at TAG COMMIT: true when TAG exists and points at COMMIT.
+rl_tag_at() {
+  rl_tag_exists "$1" && [ "$(git rev-parse "$1^{commit}")" = "$(git rev-parse "$2^{commit}")" ]
+}
+
+# rl_rc_tags PREFIX VERSION_GLOB [COMMIT]: the <prefix>X.Y.Z-rc.N tags whose X.Y.Z
+# matches VERSION_GLOB (a git glob such as "0.4.0" or "[0-9]*"), lowest first (sort -V
+# orders rc.10 above rc.9). With COMMIT, only the tags reachable from it; without, all.
+rl_rc_tags() {
+  local prefix="$1" glob="$2" commit="${3:-}" merged=()
+  if [ -n "$commit" ]; then
+    merged=(--merged "$commit")
+  fi
+  git tag "${merged[@]}" --list "${prefix}${glob}-rc.*" \
+    | grep -E "^${prefix}[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$" | sort -V || true
+}
+
 # rl_tag_exists TAG: true when the tag exists locally (the caller fetched tags).
 rl_tag_exists() {
   git rev-parse -q --verify "refs/tags/$1" >/dev/null
@@ -89,10 +145,7 @@ rl_tag_exists() {
 # rl_latest_rc PREFIX COMMIT: the highest <prefix>X.Y.Z-rc.N tag reachable from
 # COMMIT, or nothing. sort -V orders rc.10 above rc.9 within the candidate tags.
 rl_latest_rc() {
-  local prefix="$1" commit="$2"
-  git tag --merged "$commit" --list "${prefix}[0-9]*-rc.*" \
-    | grep -E "^${prefix}[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$" \
-    | sort -V | tail -n 1 || true
+  rl_rc_tags "$1" "[0-9]*" "$2" | tail -n 1
 }
 
 # rl_latest_final PREFIX COMMIT [EXCLUDE]: the highest final <prefix>X.Y.Z tag

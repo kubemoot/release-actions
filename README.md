@@ -23,12 +23,18 @@ Pin the full commit sha of a release, with its tag in a comment, so Dependabot c
         with:
           tag_prefix: "v"            # required
           change_path: ""            # count only commits under this path
-          force: "false"             # "true" builds without new commits
+          force: "false"             # "true" builds without new commits, as the next free rc.N
           allow_major: "false"       # "true" lets a breaking change leave 0.x
 ```
 
 Outputs: `version` (`X.Y.Z-rc.N`), `version_tag` (`<prefix>X.Y.Z-rc.N`), and
 `release_created` (`"true"` when the candidate should be built).
+
+A candidate never reuses an rc.N that a tag already holds, and sorts above every earlier
+candidate of its X.Y.Z (`rl_free_rc`). With `force: "true"` on an unchanged commit, for
+example to rebuild a site for content from another repository, the run gets the next free
+rc.N, or the next patch's rc.0 when the commit's version is promoted. Give the release
+workflow a `concurrency` group so two runs of one prefix never overlap.
 
 Both actions export `RELEASE_LIB`, the path of `release-lib.sh`, to the job's later
 steps. A step or script sources the helpers from there instead of keeping a copy:
