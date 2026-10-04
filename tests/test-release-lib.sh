@@ -116,14 +116,36 @@ git checkout -q main
 
 notes="$(rl_release_notes v0.1.0 "$c4")"
 check "notes breaking section" "1" "$(grep -c '^### Breaking changes' <<<"$notes")"
-check "notes feature" "1" "$(grep -c '^- feat: add widgets' <<<"$notes")"
-check "notes scoped fix" "1" "$(grep -c '^- fix(api): handle empty input' <<<"$notes")"
+check "notes breaking entry drops the prefix" "1" "$(grep -c '^- Rename the field (' <<<"$notes")"
+check "notes feature under New" "1" "$(grep -A2 '^### New' <<<"$notes" | grep -c '^- Add widgets (')"
+check "notes scoped fix drops the prefix" "1" "$(grep -c '^- Handle empty input (' <<<"$notes")"
+check "notes never show a type prefix" "0" "$(grep -cE '^- (feat|fix|perf)' <<<"$notes" || true)"
 check "notes leave out bot commits" "0" "$(grep -c 'skip ci' <<<"$notes" || true)"
-check "notes range excludes the base" "0" "$(grep -c 'chore: init' <<<"$notes" || true)"
+check "notes range excludes the base" "0" "$(grep -ci 'init' <<<"$notes" || true)"
 bot=$(commit "chore: update chart [skip ci]")
 check_status "notes over bot commits only succeed" 0 rl_release_notes "$c4" "$bot"
 check "notes over bot commits only are empty" "" "$(rl_release_notes "$c4" "$bot")"
-check "notes with no base include all" "1" "$(rl_release_notes "" "$c4" | grep -c '^### Other changes')"
+check "notes with no base include features" "1" "$(rl_release_notes "" "$c4" | grep -c '^- Add widgets (')"
+check "notes with no base leave out chores" "0" "$(rl_release_notes "" "$c4" | grep -ci 'init' || true)"
+m0=$(git rev-parse HEAD)
+for subject in "ci: tune the runner" "docs: reword the contributing guide" "test: cover the parser" \
+  "build: bump the toolchain" "refactor: split the module" "chore(deps): bump a library" \
+  "fix(test): flaky wait" "fix(ci): pin an action" "fix(deps): bump a library" "Merge-like subject without a type"; do
+  commit "$subject" >/dev/null
+done
+check "notes leave out maintenance" "" "$(rl_release_notes "$m0" HEAD)"
+m1=$(git rev-parse HEAD)
+commit "perf: answer twice as fast" >/dev/null
+commit "fix(ui): keep the selection" >/dev/null
+maint="$(rl_release_notes "$m1" HEAD)"
+check "notes perf section" "1" "$(grep -c '^### Faster' <<<"$maint")"
+check "notes user-facing scoped fix kept" "1" "$(grep -c '^- Keep the selection (' <<<"$maint")"
+doc="$(GITHUB_REPOSITORY=acme/thing rl_notes_document "$m0" "$m1" v9.9.9)"
+check "document says when nothing affects users" "1" "$(grep -c '^No user-facing changes' <<<"$doc")"
+check "document links every commit" "1" "$(grep -c '^All commits: https://github.com/acme/thing/compare/'"$m0"'...v9.9.9$' <<<"$doc")"
+check "document without a repository has no link" "0" "$(GITHUB_REPOSITORY='' rl_notes_document "$m0" "$m1" v9.9.9 | grep -c 'All commits' || true)"
+check "document separates the notes from the link" "1" "$(GITHUB_REPOSITORY=acme/thing rl_notes_document "$m1" HEAD v9.9.10 | grep -B1 '^All commits' | head -1 | grep -c '^$')"
+git reset -q --hard "$bot"
 
 check "notes limited to a path" "" "$(rl_release_notes v0.1.0 "$c4" some/path)"
 
@@ -150,7 +172,7 @@ single_out="$(mktemp -d)"
 got="$(RC_TAG=latest DRY_RUN=true rl_promote_single v Thing "$single_out" 2>/dev/null)"
 check "single dry run output" "final_tag=v0.4.0|previous_tag=v0.3.0|commit=${c6}" "$(tr '\n' '|' <<<"$got" | sed 's/|$//')"
 check "single dry run tags nothing" "" "$(git tag -l v0.4.0)"
-check "single notes" "1" "$(grep -c '^- feat: another widget' "${single_out}/notes.md")"
+check "single notes" "1" "$(grep -c '^- Another widget (' "${single_out}/notes.md")"
 check "single release line" "v0.4.0|Thing 0.4.0|notes.md" "$(tr '\t' '|' < "${single_out}/releases.tsv")"
 RL_NEW_TAGS=(); RL_NEW_TAG_SOURCES=()
 RC_TAG=latest DRY_RUN=false rl_promote_single v Thing "$single_out" >/dev/null 2>&1

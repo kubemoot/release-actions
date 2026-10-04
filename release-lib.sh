@@ -137,9 +137,27 @@ rl_resolve_point() {
   printf '%s\n' "$commit"
 }
 
-# rl_release_notes FROM TO [PATH]: Markdown notes from the conventional commits in
-# FROM..TO (FROM empty: all history up to TO), limited to commits touching PATH when
-# given. The release bot's [skip ci] commits are left out.
+# rl_notes_document PREV SRC FINAL: the release body: the user-facing notes since PREV,
+# a single line when there are none, and a link to every commit when the repository is
+# known (GITHUB_SERVER_URL and GITHUB_REPOSITORY, set in Actions).
+rl_notes_document() {
+  local prev="$1" src="$2" final="$3" notes
+  notes="$(rl_release_notes "$prev" "$src")"
+  echo "## Changes${prev:+ since ${prev}}"
+  echo
+  if [ -n "$notes" ]; then printf '%s\n\n' "$notes"; else printf 'No user-facing changes: maintenance only.\n\n'; fi
+  if [ -n "$prev" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
+    echo "All commits: ${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/compare/${prev}...${final}"
+  fi
+}
+
+# rl_release_notes FROM TO [PATH]: Markdown notes for the people who use the release,
+# from the conventional commits in FROM..TO (FROM empty: all history up to TO), limited to
+# commits touching PATH when given. Only user-facing types appear: breaking changes,
+# feat, fix, and perf, each as its description without the type prefix. Maintenance
+# (ci, chore, docs, test, build, refactor, style), fixes scoped to tests, CI, the build,
+# or dependency bumps, and the release bot's [skip ci] commits are left out. Prints
+# nothing when no commit in the range affects users.
 rl_release_notes() {
   local from="$1" to="$2" range paths=()
   range="$to"
@@ -148,18 +166,26 @@ rl_release_notes() {
   git log --no-merges --format='%h%x09%s' "$range" "${paths[@]}" \
     | { grep -vF '[skip ci]' || true; } \
     | awk -F '\t' '
-        function add(section, line) { body[section] = body[section] "- " line "\n" }
+        function add(section, desc) {
+          desc = toupper(substr(desc, 1, 1)) substr(desc, 2)
+          body[section] = body[section] "- " desc " (" $1 ")\n"
+        }
         {
-          line = $2 " (" $1 ")"
-          if ($2 ~ /^[a-z]+(\([^)]*\))?!:/) add("breaking", line)
-          else if ($2 ~ /^feat(\([^)]*\))?:/) add("feat", line)
-          else if ($2 ~ /^fix(\([^)]*\))?:/) add("fix", line)
-          else add("other", line)
+          if (!match($2, /^[a-z]+(\([^)]*\))?!?: /)) next
+          head = substr($2, 1, RLENGTH - 2); desc = substr($2, RLENGTH + 1)
+          type = head; sub(/[(!].*/, "", type)
+          scope = ""
+          if (match(head, /\([^)]*\)/)) scope = substr(head, RSTART + 1, RLENGTH - 2)
+          if (head ~ /!$/) { add("breaking", desc); next }
+          if (scope ~ /^(test|tests|ci|build|deps|deps-dev|release)$/) next
+          if (type == "feat") add("feat", desc)
+          else if (type == "fix") add("fix", desc)
+          else if (type == "perf") add("perf", desc)
         }
         END {
-          split("breaking feat fix other", order, " ")
-          title["breaking"] = "Breaking changes"; title["feat"] = "Features"
-          title["fix"] = "Fixes"; title["other"] = "Other changes"
+          split("breaking feat fix perf", order, " ")
+          title["breaking"] = "Breaking changes"; title["feat"] = "New"
+          title["fix"] = "Fixed"; title["perf"] = "Faster"
           for (i = 1; i <= 4; i++) {
             s = order[i]
             if (body[s] != "") printf "### %s\n\n%s\n", title[s], body[s]
@@ -245,7 +271,7 @@ rl_promote_single() {
   prev=$(rl_latest_final "$prefix" "$src")
   echo "Promoting ${rc_tag} (commit ${src}) to ${final}; dry run: ${DRY_RUN:-true}" >&2
   mkdir -p "$out"
-  { echo "## Changes${prev:+ since ${prev}}"; echo; rl_release_notes "$prev" "$src"; } > "${out}/notes.md"
+  rl_notes_document "$prev" "$src" "$final" > "${out}/notes.md"
   : > "${out}/releases.tsv"
   rl_add_release "$out" "$final" "${title} ${final#"$prefix"}" notes.md
   rl_make_tag "$final" "$rc_tag"
