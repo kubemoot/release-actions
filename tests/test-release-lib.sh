@@ -57,6 +57,71 @@ check "next chart rc counts up" "0.92.582-rc.4" "$(rl_next_chart_rc 0.92.582-rc.
 check "next chart rc 9 -> 10" "0.92.582-rc.10" "$(rl_next_chart_rc 0.92.582-rc.9 false)"
 check "next chart rc after promotion" "0.92.583-rc.0" "$(rl_next_chart_rc 0.92.582-rc.3 true)"
 
+check_status "final is final" 0 rl_is_final 0.1.2
+check_status "rc is not final" 1 rl_is_final 0.1.2-rc.3
+check_status "prefixed final is not final" 1 rl_is_final v0.1.2
+check_status "final is a version" 0 rl_is_version 0.1.2
+check_status "rc is a version" 0 rl_is_version 0.1.2-rc.3
+check_status "prefixed tag is not a version" 1 rl_is_version v0.1.2
+check_status "two-part version is not a version" 1 rl_is_version 0.1
+check_status "other pre-release is not a version" 1 rl_is_version 0.1.2-beta.1
+check_status "empty is not a version" 1 rl_is_version ""
+
+# rl_stamp_chart: a chart as git holds it (0.0.0), with a dependency whose version
+# must stay, and a chart without appVersion.
+charts="$(mktemp -d)"
+chart_yaml() {
+  printf '%s\n' "apiVersion: v2" "name: demo" "# set at build from the git tags" \
+    "version: 0.0.0" "appVersion: 0.0.0" "dependencies:" "  - name: sub" "    version: 1.2.3" \
+    "    repository: oci://example.com/charts"
+}
+fresh_chart() { rm -rf "$charts/demo"; mkdir -p "$charts/demo"; chart_yaml > "$charts/demo/Chart.yaml"; }
+field() { sed -n "s/^$1: //p" "$charts/demo/Chart.yaml"; }
+
+fresh_chart
+check_status "stamp an rc" 0 rl_stamp_chart "$charts/demo" 0.17.2-rc.3
+check "rc version stamped" "0.17.2-rc.3" "$(field version)"
+check "rc appVersion follows the version" "0.17.2-rc.3" "$(field appVersion)"
+check "dependency version untouched" "1" "$(grep -c '^    version: 1.2.3$' "$charts/demo/Chart.yaml")"
+check "other lines untouched" "$(chart_yaml | grep -v -e '^version:' -e '^appVersion:')" \
+  "$(grep -v -e '^version:' -e '^appVersion:' "$charts/demo/Chart.yaml")"
+check_status "stamp the final over the rc" 0 rl_stamp_chart "$charts/demo" 0.17.2
+check "final version stamped" "0.17.2" "$(field version)"
+check "final appVersion stamped" "0.17.2" "$(field appVersion)"
+check "one version line after two stamps" "1" "$(grep -c '^version:' "$charts/demo/Chart.yaml")"
+fresh_chart
+rl_stamp_chart "$charts/demo" 0.5.0-rc.1 0.342.32 2>/dev/null
+check "app version given separately" "0.5.0-rc.1|0.342.32" "$(field version)|$(field appVersion)"
+printf '%s\n' "apiVersion: v2" "name: demo" "version: 0.0.0" "" "keywords:" "  - demo" > "$charts/demo/Chart.yaml"
+rl_stamp_chart "$charts/demo" 1.0.0 2>/dev/null
+check "missing appVersion is added" "1.0.0|1" "$(field appVersion)|$(grep -c '^appVersion:' "$charts/demo/Chart.yaml")"
+check "missing appVersion lands after version" "appVersion: 1.0.0" "$(sed -n 4p "$charts/demo/Chart.yaml")"
+printf '%s\n' "apiVersion: v2" "name: demo" "version: 0.0.0 # stamped at build" > "$charts/demo/Chart.yaml"
+rl_stamp_chart "$charts/demo" 1.0.0 2>/dev/null
+check "a comment on a stamped line is dropped" "1.0.0" "$(field version)"
+
+fresh_chart
+for bad in v0.17.2 0.17 0.17.2-beta.1 0.17.2-rc "" "0.17.2; rm -rf /"; do
+  check_status "stamp refuses version [${bad}]" 1 rl_stamp_chart "$charts/demo" "$bad"
+done
+check_status "stamp refuses a malformed app version" 1 rl_stamp_chart "$charts/demo" 0.17.2 latest
+check_status "stamp refuses a missing version argument" 1 rl_stamp_chart "$charts/demo"
+check_status "stamp refuses no arguments" 1 rl_stamp_chart
+check "a refused stamp leaves the chart unchanged" "$(chart_yaml)" "$(< "$charts/demo/Chart.yaml")"
+check_status "stamp refuses a missing chart directory" 1 rl_stamp_chart "$charts/none" 0.17.2
+mkdir -p "$charts/empty"
+check_status "stamp refuses a directory without Chart.yaml" 1 rl_stamp_chart "$charts/empty" 0.17.2
+printf '%s\n' "apiVersion: v2" "name: demo" "dependencies:" "  - name: sub" "    version: 1.2.3" \
+  > "$charts/demo/Chart.yaml"
+check_status "stamp refuses a chart without a top-level version" 1 rl_stamp_chart "$charts/demo" 0.17.2
+check "a chart without a version stays unchanged" "0" "$(grep -c 'appVersion' "$charts/demo/Chart.yaml")"
+printf '%s\n' "apiVersion: v2" "version: 0.0.0" "name: demo" "version: 0.0.0" > "$charts/demo/Chart.yaml"
+check_status "stamp refuses two top-level versions" 1 rl_stamp_chart "$charts/demo" 0.17.2
+printf 'apiVersion: v2\r\nname: demo\r\nversion: 0.0.0\r\n' > "$charts/demo/Chart.yaml"
+check_status "stamp refuses CRLF line endings" 1 rl_stamp_chart "$charts/demo" 0.17.2
+check "a CRLF chart stays unchanged" "1" "$(grep -c '^version: 0.0.0' "$charts/demo/Chart.yaml")"
+rm -rf "$charts"
+
 # rl_release_needed: expected and unexpected inputs (tags checked in the repo below).
 needed() { rl_release_needed "$@" 2>/dev/null; }
 

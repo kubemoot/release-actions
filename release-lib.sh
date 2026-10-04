@@ -14,6 +14,11 @@ rl_is_rc() {
   [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]
 }
 
+# rl_is_final VERSION: true when VERSION is a final X.Y.Z.
+rl_is_final() {
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
 # rl_final_of VERSION: X.Y.Z-rc.N -> X.Y.Z (a final version is returned unchanged).
 rl_final_of() {
   printf '%s\n' "${1%-rc.*}"
@@ -28,7 +33,7 @@ rl_final_of() {
 # LAST_FINAL that is not X.Y.Z fails, so a bad base never picks a version.
 rl_hold_zero_major() {
   local version="$1" last="${2:-0.0.0}" allow="$3"
-  if ! [[ "$last" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  if ! rl_is_final "$last"; then
     echo "ERROR: last final version [${last}] is not X.Y.Z" >&2
     return 1
   fi
@@ -115,6 +120,48 @@ rl_next_chart_rc() {
   else
     printf '%s.%s.%s-rc.0\n' "$major" "$minor" "$(( patch + 1 ))"
   fi
+}
+
+# rl_is_version VERSION: true when VERSION is a final X.Y.Z or a candidate X.Y.Z-rc.N.
+rl_is_version() {
+  rl_is_final "$1" || rl_is_rc "$1"
+}
+
+# rl_stamp_chart CHART_DIR VERSION [APP_VERSION]: writes the version a build computed
+# from the tags into CHART_DIR/Chart.yaml before the chart is packaged. Git holds
+# 0.0.0; the build stamps its own copy and never commits it. Sets the top-level version
+# to VERSION and appVersion to APP_VERSION (default VERSION), adding appVersion right
+# after version when the chart has none; a chart whose images default their tag to
+# .Chart.AppVersion needs nothing else. Indented version keys (dependencies) are left
+# alone, and a comment on a stamped line is dropped. Both versions must be X.Y.Z or
+# X.Y.Z-rc.N, and the chart needs exactly one top-level version and LF line endings;
+# a refused stamp leaves the file unchanged.
+rl_stamp_chart() {
+  local dir="${1:-}" version="${2:-}" app="${3:-${2:-}}" chart="${1:-}/Chart.yaml" stamped
+  if [ ! -f "$chart" ]; then
+    echo "ERROR: no Chart.yaml in [${dir}]" >&2
+    return 1
+  fi
+  if ! rl_is_version "$version" || ! rl_is_version "$app"; then
+    echo "ERROR: chart version [${version}] and app version [${app}] must be X.Y.Z or X.Y.Z-rc.N" >&2
+    return 1
+  fi
+  if [ "$(grep -c '^version:' "$chart")" -ne 1 ]; then
+    echo "ERROR: ${chart} needs exactly one top-level version" >&2
+    return 1
+  fi
+  if grep -q $'\r' "$chart"; then
+    echo "ERROR: ${chart} has CRLF line endings" >&2
+    return 1
+  fi
+  stamped="$(awk -v version="$version" -v app="$app" \
+    -v has_app="$(grep -c '^appVersion:' "$chart")" '
+    /^appVersion:/ { print "appVersion: " app; next }
+    /^version:/ { print "version: " version; if (!has_app) print "appVersion: " app; next }
+    { print }
+  ' "$chart")" || return 1
+  printf '%s\n' "$stamped" > "$chart"
+  echo "Stamped ${chart}: version ${version}, appVersion ${app}" >&2
 }
 
 # rl_resolve_point REF: the commit a promotion starts from. "latest" (or empty) is

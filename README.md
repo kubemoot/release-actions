@@ -43,6 +43,20 @@ steps. A step or script sources the helpers from there instead of keeping a copy
 
 A script run from such a step does the same: `source "${RELEASE_LIB:?}"`.
 
+Versions live only in git tags: a `Chart.yaml` in git holds `0.0.0`, and the build
+stamps the version it computed into its own copy before packaging, never committing it:
+
+```yaml
+      - run: |
+          source "${RELEASE_LIB}"
+          rl_stamp_chart charts/my-chart "${{ steps.version.outputs.version }}"
+          helm package charts/my-chart
+```
+
+`rl_stamp_chart CHART_DIR VERSION [APP_VERSION]` sets `version` and `appVersion`
+(default `VERSION`) and refuses anything but `X.Y.Z` or `X.Y.Z-rc.N`. Image tags that
+default to `.Chart.AppVersion` need no stamping of their own.
+
 ## Versions
 
 Every push to main that passes CI is tagged `vX.Y.Z` and gets a GitHub Release. The
