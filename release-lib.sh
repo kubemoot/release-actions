@@ -334,14 +334,15 @@ rl_notes_document() {
 # feat, fix, and perf, each as its description without the type prefix, plus docs when
 # RL_NOTES_DOCS=true (a repository whose product is its documentation). Maintenance
 # (ci, chore, docs elsewhere, test, build, refactor, style), fixes scoped to tests, CI,
-# the build, or dependency bumps, and the release bot's [skip ci] commits are left out.
+# the build, or dependency bumps, [skip ci] commits, and every commit a bot authored
+# (an author name ending in [bot]) are left out.
 # Prints nothing when no commit in the range affects users.
 rl_release_notes() {
   local from="$1" to="$2" range paths=()
   range="$to"
   [ -n "$from" ] && range="${from}..${to}"
   [ -n "${3:-}" ] && paths=(-- "$3")
-  git log --no-merges --format='%h%x09%s' "$range" "${paths[@]}" \
+  git log --no-merges --format='%h%x09%s%x09%an' "$range" "${paths[@]}" \
     | { grep -vF '[skip ci]' || true; } \
     | awk -F '\t' -v docs="${RL_NOTES_DOCS:-false}" '
         function add(section, desc) {
@@ -349,6 +350,7 @@ rl_release_notes() {
           body[section] = body[section] "- " desc " (" $1 ")\n"
         }
         {
+          if ($3 ~ /\[bot\]$/) next
           if (!match($2, /^[a-z]+(\([^)]*\))?!?: /)) next
           head = substr($2, 1, RLENGTH - 2); desc = substr($2, RLENGTH + 1)
           type = head; sub(/[(!].*/, "", type)
