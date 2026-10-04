@@ -57,6 +57,19 @@ stamps the version it computed into its own copy before packaging, never committ
 (default `VERSION`) and refuses anything but `X.Y.Z` or `X.Y.Z-rc.N`. Image tags that
 default to `.Chart.AppVersion` need no stamping of their own.
 
+An image of another repository is written in a values file with the tag `0.0.0`
+(`image: "code-sandbox:0.0.0"`) and stamped the same way:
+
+- `rl_stamp_remote_images VALUES REMOTE` gives each `NAME:0.0.0` image the version of
+  the latest final `NAME-vX.Y.Z` tag of the repository at `REMOTE`, so a chart pins only
+  released images (a release candidate build of a crew chart).
+- `rl_stamp_images_like VALUES REFERENCE` gives each one the tag `REFERENCE` (another
+  values file) has for it, so a promoted chart pins exactly what its candidate ran.
+
+Both resolve every image before changing the file and fail on an image they cannot
+resolve; `rl_stamp_image`, `rl_image_placeholders`, `rl_image_tag`, and
+`rl_latest_remote_final` are the pieces they use.
+
 ## Versions
 
 Every push to main that passes CI is tagged `vX.Y.Z` and gets a GitHub Release. The
