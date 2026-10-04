@@ -164,6 +164,135 @@ rl_stamp_chart() {
   echo "Stamped ${chart}: version ${version}, appVersion ${app}" >&2
 }
 
+# Image pins. A values file in git references another repository's image with the tag
+# 0.0.0 (name:0.0.0, or registry/path/name:0.0.0, bare or quoted); the build stamps the
+# tag, so no version of that image is typed in git either.
+RL_IMAGE_BEFORE="(^|[\"' /])"
+RL_IMAGE_AFTER="([\"' ]|$)"
+
+# rl_image_placeholders FILE: the names of the images FILE references with the tag
+# 0.0.0, sorted, each once; nothing when there are none.
+rl_image_placeholders() {
+  if [ ! -f "${1:-}" ]; then
+    echo "ERROR: no file [${1:-}]" >&2
+    return 1
+  fi
+  { grep -oE "${RL_IMAGE_BEFORE}[a-z0-9][a-z0-9._-]*:0\.0\.0${RL_IMAGE_AFTER}" "$1" || true; } \
+    | sed -E "s/^[\"' \/]//; s/:0\.0\.0.*$//" | sort -u
+}
+
+# rl_image_tag FILE NAME: the one tag FILE gives image NAME (any tag but 0.0.0). Fails
+# when FILE has no such reference, or pins NAME with two different tags.
+rl_image_tag() {
+  local file="$1" name="$2" tags
+  tags="$({ grep -oE "${RL_IMAGE_BEFORE}${name//./\\.}:[A-Za-z0-9._-]+" "$file" || true; } \
+    | sed -E 's/^.*://' | grep -vxF 0.0.0 | sort -u)"
+  if [ -z "$tags" ] || [ "$(wc -l <<<"$tags")" -ne 1 ]; then
+    echo "ERROR: ${file} needs exactly one tag for image ${name}, has [${tags//$'\n'/ }]" >&2
+    return 1
+  fi
+  printf '%s\n' "$tags"
+}
+
+# rl_stamp_image FILE NAME VERSION: writes VERSION as the tag of every NAME:0.0.0 image
+# reference in FILE. VERSION must be X.Y.Z or X.Y.Z-rc.N. A FILE without a NAME:0.0.0
+# reference is refused, so a typed version or a renamed image fails the build instead
+# of shipping unstamped; a refused stamp leaves FILE unchanged.
+rl_stamp_image() {
+  local file="${1:-}" name="${2:-}" version="${3:-}" stamped
+  if ! [[ "$name" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+    echo "ERROR: [${name}] is not an image name" >&2
+    return 1
+  fi
+  if ! rl_is_version "$version"; then
+    echo "ERROR: image tag [${version}] must be X.Y.Z or X.Y.Z-rc.N" >&2
+    return 1
+  fi
+  if ! rl_image_placeholders "$file" | grep -qxF -- "$name"; then
+    echo "ERROR: [${file}] has no ${name}:0.0.0 image to stamp" >&2
+    return 1
+  fi
+  stamped="$(sed -E "s#${RL_IMAGE_BEFORE}${name//./\\.}:0\.0\.0${RL_IMAGE_AFTER}#\1${name}:${version}\2#g" "$file")" \
+    || return 1
+  printf '%s\n' "$stamped" > "$file"
+  echo "Stamped ${file}: ${name}:${version}" >&2
+}
+
+# rl_latest_remote_final REMOTE PREFIX: the highest final <prefix>X.Y.Z tag of the
+# repository at REMOTE (a URL or a path), read with git ls-remote. Fails when REMOTE
+# cannot be read or has no final tag with that prefix.
+rl_latest_remote_final() {
+  local remote="${1:-}" prefix="${2:-}" shown tags latest
+  shown="$(sed -E 's#//[^/@]*@#//#' <<<"$remote")"
+  if [ -z "$remote" ] || [ -z "$prefix" ]; then
+    echo "ERROR: a remote and a tag prefix are required" >&2
+    return 1
+  fi
+  if ! tags="$(git ls-remote --tags --refs "$remote" 2>/dev/null)"; then
+    echo "ERROR: cannot read the tags of ${shown}" >&2
+    return 1
+  fi
+  latest="$(awk '{ sub("^refs/tags/", "", $2); print $2 }' <<<"$tags" \
+    | grep -E "^${prefix}[0-9]+\.[0-9]+\.[0-9]+$" | sort -V | tail -n 1 || true)"
+  if [ -z "$latest" ]; then
+    echo "ERROR: ${shown} has no final ${prefix}X.Y.Z tag" >&2
+    return 1
+  fi
+  printf '%s\n' "$latest"
+}
+
+# rl_stamp_images_with FILE RESOLVER [ARGS...]: stamps every NAME:0.0.0 image in FILE
+# with the tag `RESOLVER ARGS... NAME` prints. Every tag is resolved before FILE changes,
+# so a name that cannot be resolved leaves FILE as it was. Prints "NAME TAG" per image.
+rl_stamp_images_with() {
+  local file="$1" resolver="$2" names name tag work pin
+  shift 2
+  names="$(rl_image_placeholders "$file")" || return 1
+  local pins=()
+  for name in $names; do
+    tag="$("$resolver" "$@" "$name")" || return 1
+    pins+=("${name} ${tag}")
+  done
+  work="$(mktemp)"
+  cp "$file" "$work"
+  for pin in "${pins[@]}"; do
+    if ! rl_stamp_image "$work" "${pin% *}" "${pin#* }"; then
+      rm -f "$work"
+      return 1
+    fi
+  done
+  cat "$work" > "$file"
+  rm -f "$work"
+  [ "${#pins[@]}" -eq 0 ] || printf '%s\n' "${pins[@]}"
+}
+
+_rl_remote_final_of() {
+  local tag
+  tag="$(rl_latest_remote_final "$1" "${2}-v")" || return 1
+  printf '%s\n' "${tag#"${2}-v"}"
+}
+
+# rl_stamp_remote_images FILE REMOTE: stamps every NAME:0.0.0 image in FILE with the
+# version of the latest final NAME-vX.Y.Z tag of the repository at REMOTE, so a chart
+# pins only released images of another repository (Kubemoot's component images in a
+# crew chart) and git holds none of their versions. Prints "NAME VERSION" per image; a
+# file without placeholders is left alone.
+rl_stamp_remote_images() {
+  rl_stamp_images_with "$1" _rl_remote_final_of "$2"
+}
+
+# rl_stamp_images_like FILE REFERENCE: stamps every NAME:0.0.0 image in FILE with the
+# tag REFERENCE (another values file, such as the one a tested release candidate was
+# packaged with) gives the same image, so a promoted chart pins exactly the images its
+# candidate ran. Prints "NAME TAG" per image; an image REFERENCE lacks fails.
+rl_stamp_images_like() {
+  if [ ! -f "${2:-}" ]; then
+    echo "ERROR: no reference file [${2:-}]" >&2
+    return 1
+  fi
+  rl_stamp_images_with "$1" rl_image_tag "$2"
+}
+
 # rl_resolve_point REF: the commit a promotion starts from. "latest" (or empty) is
 # the tip of origin/main; otherwise REF must be a release-candidate tag on main.
 rl_resolve_point() {
@@ -202,10 +331,11 @@ rl_notes_document() {
 # rl_release_notes FROM TO [PATH]: Markdown notes for the people who use the release,
 # from the conventional commits in FROM..TO (FROM empty: all history up to TO), limited to
 # commits touching PATH when given. Only user-facing types appear: breaking changes,
-# feat, fix, and perf, each as its description without the type prefix. Maintenance
-# (ci, chore, docs, test, build, refactor, style), fixes scoped to tests, CI, the build,
-# or dependency bumps, and the release bot's [skip ci] commits are left out. Prints
-# nothing when no commit in the range affects users.
+# feat, fix, and perf, each as its description without the type prefix, plus docs when
+# RL_NOTES_DOCS=true (a repository whose product is its documentation). Maintenance
+# (ci, chore, docs elsewhere, test, build, refactor, style), fixes scoped to tests, CI,
+# the build, or dependency bumps, and the release bot's [skip ci] commits are left out.
+# Prints nothing when no commit in the range affects users.
 rl_release_notes() {
   local from="$1" to="$2" range paths=()
   range="$to"
@@ -213,7 +343,7 @@ rl_release_notes() {
   [ -n "${3:-}" ] && paths=(-- "$3")
   git log --no-merges --format='%h%x09%s' "$range" "${paths[@]}" \
     | { grep -vF '[skip ci]' || true; } \
-    | awk -F '\t' '
+    | awk -F '\t' -v docs="${RL_NOTES_DOCS:-false}" '
         function add(section, desc) {
           desc = toupper(substr(desc, 1, 1)) substr(desc, 2)
           body[section] = body[section] "- " desc " (" $1 ")\n"
@@ -229,12 +359,13 @@ rl_release_notes() {
           if (type == "feat") add("feat", desc)
           else if (type == "fix") add("fix", desc)
           else if (type == "perf") add("perf", desc)
+          else if (type == "docs" && docs == "true") add("docs", desc)
         }
         END {
-          split("breaking feat fix perf", order, " ")
+          split("breaking feat fix perf docs", order, " ")
           title["breaking"] = "Breaking changes"; title["feat"] = "New"
-          title["fix"] = "Fixed"; title["perf"] = "Faster"
-          for (i = 1; i <= 4; i++) {
+          title["fix"] = "Fixed"; title["perf"] = "Faster"; title["docs"] = "Documentation"
+          for (i = 1; i <= 5; i++) {
             s = order[i]
             if (body[s] != "") printf "### %s\n\n%s\n", title[s], body[s]
           }
