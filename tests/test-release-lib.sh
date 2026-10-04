@@ -122,6 +122,96 @@ check_status "stamp refuses CRLF line endings" 1 rl_stamp_chart "$charts/demo" 0
 check "a CRLF chart stays unchanged" "1" "$(grep -c '^version: 0.0.0' "$charts/demo/Chart.yaml")"
 rm -rf "$charts"
 
+# Image pins: a values file as git holds it, with two placeholder images (one twice,
+# one with a registry path), a third-party image, and look-alike names.
+values="$(mktemp)"
+values_yaml() {
+  printf '%s\n' "global:" "  imageRegistry: ghcr.io/kubemoot" "tools:" \
+    "  sandbox:" "    image: \"code-sandbox:0.0.0\"" \
+    "  access:" "    image: artifact-access:0.0.0" \
+    "  readops:" "    image: 'ghcr.io/kubemoot/artifact-access:0.0.0'" \
+    "  other:" "    image: \"quay.io/acme/kubernetes-server:v0.0.63\"" \
+    "  lookalike:" "    image: \"my-code-sandbox:0.0.0x\"" \
+    "version: 0.0.0"
+}
+values_yaml > "$values"
+check "placeholders found once each" "artifact-access code-sandbox" "$(rl_image_placeholders "$values" | tr '\n' ' ' | sed 's/ $//')"
+check_status "placeholders of a missing file fail" 1 rl_image_placeholders "$values.none"
+printf 'image: "agent:0.4.2"\n' > "$values.final"
+check "no placeholders in a stamped file" "" "$(rl_image_placeholders "$values.final")"
+check_status "stamp an image" 0 rl_stamp_image "$values" code-sandbox 0.17.0
+check "image stamped in its quotes" "1" "$(grep -c '^    image: "code-sandbox:0.17.0"$' "$values")"
+rl_stamp_image "$values" artifact-access 0.343.0-rc.2 2>/dev/null
+check "every reference of the image stamped" "2" "$(grep -c 'artifact-access:0.343.0-rc.2' "$values")"
+check "registry path and quotes kept" "1" "$(grep -c "^    image: 'ghcr.io/kubemoot/artifact-access:0.343.0-rc.2'$" "$values")"
+check "other images and versions untouched" "$(values_yaml | grep -v -e code-sandbox:0 -e artifact-access:0)" \
+  "$(grep -v -e code-sandbox:0 -e artifact-access:0 "$values")"
+check "tag of a stamped image" "0.17.0" "$(rl_image_tag "$values" code-sandbox)"
+check_status "stamping a stamped image is refused" 1 rl_stamp_image "$values" code-sandbox 0.18.0
+values_yaml > "$values"
+for bad in v0.17.0 latest 0.17 0.17.0-beta.1 "" "0.17.0#evil"; do
+  check_status "image stamp refuses tag [${bad}]" 1 rl_stamp_image "$values" code-sandbox "$bad"
+done
+for bad in "" "Code-Sandbox" "code sandbox" "code-sandbox#" "-x"; do
+  check_status "image stamp refuses name [${bad}]" 1 rl_stamp_image "$values" "$bad" 0.17.0
+done
+check_status "image stamp refuses a name with no placeholder" 1 rl_stamp_image "$values" kubernetes-server 0.17.0
+check_status "image stamp refuses a look-alike name" 1 rl_stamp_image "$values" my-code-sandbox 0.17.0
+check_status "image stamp refuses a missing file" 1 rl_stamp_image "$values.none" code-sandbox 0.17.0
+check "a refused image stamp leaves the file unchanged" "$(values_yaml)" "$(< "$values")"
+
+# rl_stamp_images_like: the final pins what the candidate pinned.
+printf '%s\n' "a:" "  image: \"ghcr.io/kubemoot/code-sandbox:0.17.0\"" "b:" "  image: artifact-access:0.343.0" \
+  "c:" "  image: artifact-access:0.343.0" > "$values.ref"
+got="$(rl_stamp_images_like "$values" "$values.ref" 2>/dev/null)"
+check "images like the reference" "artifact-access 0.343.0|code-sandbox 0.17.0" "$(tr '\n' '|' <<<"$got" | sed 's/|$//')"
+check "no placeholder left" "" "$(rl_image_placeholders "$values")"
+values_yaml > "$values"
+printf 'a:\n  image: "code-sandbox:0.17.0"\n' > "$values.partial"
+check_status "a reference without an image fails" 1 rl_stamp_images_like "$values" "$values.partial"
+check "a failed like-stamp leaves the file unchanged" "$(values_yaml)" "$(< "$values")"
+printf '%s\n' "image: code-sandbox:0.17.0" "image: code-sandbox:0.16.0" "image: artifact-access:0.343.0" > "$values.twice"
+check_status "a reference with two tags for an image fails" 1 rl_stamp_images_like "$values" "$values.twice"
+printf '%s\n' "image: code-sandbox:0.0.0" "image: artifact-access:0.343.0" > "$values.unstamped"
+check_status "an unstamped reference fails" 1 rl_stamp_images_like "$values" "$values.unstamped"
+printf '%s\n' "image: code-sandbox:137268e5" "image: artifact-access:0.343.0" > "$values.sha"
+check_status "a reference with a non-version tag fails" 1 rl_stamp_images_like "$values" "$values.sha"
+check_status "a missing reference fails" 1 rl_stamp_images_like "$values" "$values.none"
+check "unchanged after every refused like-stamp" "$(values_yaml)" "$(< "$values")"
+check_status "like-stamp of a file without placeholders succeeds" 0 rl_stamp_images_like "$values.final" "$values.partial"
+check "and prints nothing" "" "$(rl_stamp_images_like "$values.final" "$values.partial" 2>/dev/null)"
+
+# rl_latest_remote_final and rl_stamp_remote_images against a bare repository.
+upstream="$(mktemp -d)"
+git init -q -b main "$upstream/src"
+git -C "$upstream/src" -c user.email=t@e -c user.name=t commit -q --allow-empty -m init
+for t in code-sandbox-v0.14.4 code-sandbox-v0.17.0 code-sandbox-v0.9.9 code-sandbox-v0.18.0-rc.126 \
+  artifact-access-v0.343.0 artifact-access-v0.342.31 artifact-access-v0.344.0-rc.1 \
+  my-code-sandbox-v9.0.0 code-sandbox-vx v0.99.0 rc-only-v0.1.0-rc.0; do
+  git -C "$upstream/src" tag "$t"
+done
+git clone -q --bare "$upstream/src" "$upstream/remote.git"
+check "remote final ignores candidates and sorts" "code-sandbox-v0.17.0" "$(rl_latest_remote_final "$upstream/remote.git" code-sandbox-v)"
+check "remote final per prefix" "artifact-access-v0.343.0" "$(rl_latest_remote_final "$upstream/remote.git" artifact-access-v)"
+check_status "remote with only candidates fails" 1 rl_latest_remote_final "$upstream/remote.git" rc-only-v
+check_status "remote without the prefix fails" 1 rl_latest_remote_final "$upstream/remote.git" none-v
+check_status "unreadable remote fails" 1 rl_latest_remote_final "$upstream/missing.git" code-sandbox-v
+check_status "remote needs a prefix" 1 rl_latest_remote_final "$upstream/remote.git" ""
+check "a remote with a credential is not echoed" "0" \
+  "$(rl_latest_remote_final "https://x-access-token:s3cret@127.0.0.1:9/none.git" v 2>&1 | grep -c s3cret || true)"
+values_yaml > "$values"
+got="$(rl_stamp_remote_images "$values" "$upstream/remote.git" 2>/dev/null)"
+check "remote images resolved" "artifact-access 0.343.0|code-sandbox 0.17.0" "$(tr '\n' '|' <<<"$got" | sed 's/|$//')"
+check "remote images stamped" "3" "$(grep -cE '(code-sandbox:0\.17\.0|artifact-access:0\.343\.0)' "$values")"
+values_yaml > "$values"
+printf 'image: "agent-runtime:0.0.0"\nimage: code-sandbox:0.0.0\n' > "$values.unreleased"
+check_status "an image without a final fails" 1 rl_stamp_remote_images "$values.unreleased" "$upstream/remote.git"
+check "and leaves the file unchanged" "1" "$(grep -c 'code-sandbox:0.0.0' "$values.unreleased")"
+check_status "an unreadable remote fails the stamp" 1 rl_stamp_remote_images "$values" "$upstream/missing.git"
+check "unchanged after a failed remote stamp" "$(values_yaml)" "$(< "$values")"
+check "a file without placeholders needs no remote" "" "$(rl_stamp_remote_images "$values.final" "$upstream/missing.git")"
+rm -rf "$upstream" "$values" "$values".*
+
 # rl_release_needed: expected and unexpected inputs (tags checked in the repo below).
 needed() { rl_release_needed "$@" 2>/dev/null; }
 
