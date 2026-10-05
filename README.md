@@ -7,8 +7,8 @@ The release pipeline pieces that every Kubemoot repository shares, kept in one p
 | Path | What it is |
 | --- | --- |
 | `release-candidate-version/` | Composite action: computes the next release candidate `X.Y.Z-rc.N` for a tag prefix from the conventional commits since the last final `<prefix>X.Y.Z` tag, and decides whether to build it |
-| `setup/` | Composite action: exports `RELEASE_LIB` for a job that does not compute a version (promotion, script tests) |
-| `release-lib.sh` | Bash helpers for release candidates, promotion, and release signing (`rl_*` functions), sourced by both actions and by the repositories' release scripts |
+| `setup/` | Composite action: exports `RELEASE_LIB` for a job that does not compute a version (Publish Release, script tests) |
+| `release-lib.sh` | Bash helpers for release candidates, publishing releases, and release signing (`rl_*` functions), sourced by both actions and by the repositories' release scripts |
 | `tests/test-release-lib.sh` | Tests for `release-lib.sh` |
 | `.github/workflows/all-checks.yaml` | Reusable workflow: the one required check for a pull request; waits for every other check on the commit and passes only when all passed or were skipped |
 
@@ -36,7 +36,7 @@ Outputs: `version` (`X.Y.Z-rc.N`), `version_tag` (`<prefix>X.Y.Z-rc.N`), and
 A candidate never reuses an rc.N that a tag already holds, and sorts above every earlier
 candidate of its X.Y.Z (`rl_free_rc`). With `force: "true"` on an unchanged commit, for
 example to rebuild a site for content from another repository, the run gets the next free
-rc.N, or the next patch's rc.0 when the commit's version is promoted. Give the release
+rc.N, or the next patch's rc.0 when the commit's version is published. Give the release
 workflow a `concurrency` group so two runs of one prefix never overlap.
 
 Both actions export `RELEASE_LIB`, the path of `release-lib.sh`, to the job's later
@@ -73,7 +73,7 @@ An image of another repository is written in a values file with the tag `0.0.0`
   the latest final `NAME-vX.Y.Z` tag of the repository at `REMOTE`, so a chart pins only
   released images (a release candidate build of a crew chart).
 - `rl_stamp_images_like VALUES REFERENCE` gives each one the tag `REFERENCE` (another
-  values file) has for it, so a promoted chart pins exactly what its candidate ran.
+  values file) has for it, so a published chart pins exactly what its candidate ran.
 - `rl_stamp_local_images VALUES COMMIT rc|final` gives each one the version of the
   latest `NAME-vX.Y.Z-rc.N` (or final `NAME-vX.Y.Z`) tag of this repository reachable
   from `COMMIT`, for a chart that pins images the same repository builds (Kubemoot's
