@@ -1,0 +1,12 @@
+# The required check for pull requests to this repository (see all-checks.yaml).
+name: Pull Request
+
+on:
+  pull_request:
+
+permissions:
+  checks: read
+
+jobs:
+  all-checks:
+    uses: ./.github/workflows/all-checks.yaml

@@ -10,6 +10,7 @@ The release pipeline pieces that every Kubemoot repository shares, kept in one p
 | `setup/` | Composite action: exports `RELEASE_LIB` for a job that does not compute a version (promotion, script tests) |
 | `release-lib.sh` | Bash helpers for release candidates, promotion, and release signing (`rl_*` functions), sourced by both actions and by the repositories' release scripts |
 | `tests/test-release-lib.sh` | Tests for `release-lib.sh` |
+| `.github/workflows/all-checks.yaml` | Reusable workflow: the one required check for a pull request; waits for every other check on the commit and passes only when all passed or were skipped |
 
 ## Use
 

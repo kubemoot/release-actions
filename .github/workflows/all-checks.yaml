@@ -1,0 +1,43 @@
+# The one required check for a pull request. It waits for every other check run on the
+# pull request's commit (CI, CodeQL, DCO, and whichever path-filtered workflows the change
+# started) and passes only when all of them passed or were skipped, so a repository with
+# path-filtered CI can require a single check that always runs. Auto-merge waits on it.
+#
+# Call it from each repository:
+#
+#   name: Pull Request
+#   on:
+#     pull_request:
+#   permissions:
+#     checks: read
+#   jobs:
+#     all-checks:
+#       uses: kubemoot/release-actions/.github/workflows/all-checks.yaml@<sha> # vX.Y.Z
+#
+# The required status checks are then "all-checks / all-checks" and "CodeQL".
+name: All Checks
+
+on:
+  workflow_call:
+
+permissions:
+  checks: read
+
+jobs:
+  all-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: poseidon/wait-for-status-checks@e7e24423722c5b8e97a6dd5848827d2a412f812d # v0.7.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Workflows started by the same pull request event are queued within seconds;
+          # the delay lets them appear before the first poll.
+          delay: 15s
+          timeout: 5000s
+          # Ignored: its own check run ("<caller job> / all-checks" when called), and the
+          # CodeQL results check, which concludes "neutral" on a change with nothing to
+          # analyze; this action counts neutral as failed, so CodeQL is required on its own
+          # (GitHub's required checks accept neutral and block on failure). The CodeQL
+          # analysis jobs are still waited for here.
+          ignore_pattern: ^((all-checks / )?all-checks|CodeQL)$
