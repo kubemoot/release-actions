@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for release-lib.sh against a throwaway git repository.
+# Tests for release-lib.sh against a throwaway git repository and stubs of cosign and helm.
 # Usage: bash tests/test-release-lib.sh   (exit 0 = all passed)
 set -euo pipefail
 
@@ -445,6 +445,132 @@ out="$(mktemp -d)"
 rl_add_release "$out" v0.3.0 "Title with spaces" notes.md
 check "add_release writes a tsv line" "v0.3.0|Title with spaces|notes.md" "$(tr '\t' '|' < "$out/releases.tsv")"
 rm -rf "$out"
+
+# Release signing, against stubs: cosign keeps a signature as a file in signed/ named for
+# the reference, and verify finds it; COSIGN_BROKEN makes cosign not run, COSIGN_FAIL
+# makes signing a reference that contains it fail, COSIGN_LOGIN_FAIL makes login fail.
+# helm show chart prints the chart's name.
+sign_dir="$(mktemp -d)"
+mkdir -p "${sign_dir}/bin" "${sign_dir}/signed" "${sign_dir}/out"
+export SIGN_LOG="${sign_dir}/calls.log" SIGNED_STATE="${sign_dir}/signed"
+cat > "${sign_dir}/bin/cosign" <<'STUB'
+#!/usr/bin/env bash
+echo "cosign $*" >> "$SIGN_LOG"
+[ -z "${COSIGN_BROKEN:-}" ] || exit 127
+case "$1" in
+  version) printf 'GitVersion:    v3.0.2\nGitCommit:     abc\n' ;;
+  login) cat >/dev/null; [ -z "${COSIGN_LOGIN_FAIL:-}" ] ;;
+  verify) [ -f "$SIGNED_STATE/$(echo "$2" | tr '/:@' '___')" ] ;;
+  sign)
+    ref="${*: -1}"
+    [ -z "${COSIGN_FAIL:-}" ] || [[ "$ref" != *"${COSIGN_FAIL}"* ]] || exit 1
+    touch "$SIGNED_STATE/$(echo "$ref" | tr '/:@' '___')" ;;
+esac
+STUB
+cat > "${sign_dir}/bin/helm" <<'STUB'
+#!/usr/bin/env bash
+[ "$1 $2" = "show chart" ] && printf 'apiVersion: v2\nname: %s\nversion: 1.2.3\n' "$(basename "$3" .tgz)"
+STUB
+chmod +x "${sign_dir}/bin/cosign" "${sign_dir}/bin/helm"
+saved_path="$PATH"
+PATH="${sign_dir}/bin:${PATH}"
+digest_a="sha256:$(printf 'a%.0s' {1..64})"
+digest_b="sha256:$(printf 'b%.0s' {1..64})"
+oidc=(ACTIONS_ID_TOKEN_REQUEST_URL=https://token.test ACTIONS_ID_TOKEN_REQUEST_TOKEN=t)
+workflow=(GITHUB_SERVER_URL=https://github.com GITHUB_WORKFLOW_REF=kubemoot/demo/.github/workflows/publish-release.yaml@refs/heads/main)
+creds=(RELEASE_REGISTRY=ghcr.test/kubemoot GHCR_USERNAME=u GHCR_TOKEN=tok)
+# preflight RUN_ENV...: rl_sign_preflight in a clean shell with only RUN_ENV set; prints
+# its output, then the subjects file's line count.
+preflight() {
+  env -i PATH="$PATH" SIGN_LOG="$SIGN_LOG" SIGNED_STATE="$SIGNED_STATE" "$@" bash -c \
+    "source '${lib}'; rl_sign_preflight '${sign_dir}/out' 2>&1 && wc -l < '${sign_dir}/out/subjects.tsv' | tr -d ' '"
+}
+id_line="signing: cosign v3.0.2, identity https://github.com/kubemoot/demo/.github/workflows/publish-release.yaml@refs/heads/main, issuer https://token.actions.githubusercontent.com"
+
+check "preflight dry run names cosign, identity, and issuer" "${id_line}|0" \
+  "$(preflight DRY_RUN=true "${oidc[@]}" "${workflow[@]}" | paste -sd'|')"
+check "preflight dry run outside Actions needs no OIDC token" \
+  "signing: cosign v3.0.2, identity <workflow>@<ref>, issuer https://token.actions.githubusercontent.com|0" \
+  "$(preflight DRY_RUN=true | paste -sd'|')"
+check "preflight identity defaults the server to github.com" 1 \
+  "$(preflight DRY_RUN=true GITHUB_WORKFLOW_REF=o/r/.github/workflows/p.yaml@refs/heads/main \
+    | grep -c '^signing: cosign v3.0.2, identity https://github.com/o/r/.github/workflows/p.yaml@refs/heads/main, ')"
+: > "$SIGN_LOG"
+check "preflight dry run logs nothing in" 0 "$(preflight DRY_RUN=true "${oidc[@]}" >/dev/null; grep -c '^cosign login' "$SIGN_LOG" || true)"
+check_status "preflight dry run in Actions without an OIDC token fails" 1 \
+  preflight DRY_RUN=true GITHUB_ACTIONS=true ACTIONS_ID_TOKEN_REQUEST_URL=https://token.test
+check "and says the job needs id-token: write" 1 \
+  "$(preflight DRY_RUN=true GITHUB_ACTIONS=true | grep -c '^ERROR: no GitHub OIDC token for keyless signing: the job needs permissions id-token: write$')"
+check_status "preflight real run without an OIDC token fails" 1 preflight DRY_RUN=false "${creds[@]}"
+check_status "preflight where cosign does not run fails" 1 preflight DRY_RUN=true COSIGN_BROKEN=1
+check "and says cosign is required" 1 \
+  "$(preflight DRY_RUN=true COSIGN_BROKEN=1 | grep -c '^ERROR: cosign is required to sign the release and does not run$')"
+check_status "preflight real run without registry credentials fails" 1 \
+  preflight DRY_RUN=false "${oidc[@]}" RELEASE_REGISTRY=ghcr.test/kubemoot GHCR_USERNAME=u
+check "and names them" 1 "$(preflight DRY_RUN=false "${oidc[@]}" RELEASE_REGISTRY=ghcr.test/kubemoot \
+  | grep -c '^ERROR: GHCR_USERNAME and GHCR_TOKEN are required to store the signatures$')"
+: > "$SIGN_LOG"
+check "preflight real run logs cosign in to the registry host" "${id_line}|0" \
+  "$(preflight DRY_RUN=false "${oidc[@]}" "${workflow[@]}" "${creds[@]}" | paste -sd'|')"
+check "with the user and the token on stdin" 1 "$(grep -cx 'cosign login ghcr.test -u u --password-stdin' "$SIGN_LOG")"
+check_status "preflight fails when cosign cannot log in" 1 \
+  preflight DRY_RUN=false COSIGN_LOGIN_FAIL=1 "${oidc[@]}" "${creds[@]}"
+check "and names the registry" 1 "$(preflight DRY_RUN=false COSIGN_LOGIN_FAIL=1 "${oidc[@]}" "${creds[@]}" \
+  | grep -c '^ERROR: cosign cannot log in to ghcr.test$')"
+echo stale > "${sign_dir}/out/subjects.tsv"
+preflight DRY_RUN=true >/dev/null
+check "preflight empties the subjects file" 0 "$(wc -c < "${sign_dir}/out/subjects.tsv" | tr -d ' ')"
+
+RL_SIGN_SUBJECTS="${sign_dir}/out/subjects.tsv"
+RL_SIGN_IDENTITY="https://github.com/kubemoot/demo/.github/workflows/publish-release.yaml@refs/heads/main"
+: > "$RL_SIGN_SUBJECTS"; : > "$SIGN_LOG"
+check "dry run plans the signature" "sign ghcr.test/kubemoot/a@<digest after the push> (dry run: not signed)" \
+  "$(DRY_RUN=true rl_sign_artifact ghcr.test/kubemoot/a "<digest after the push>")"
+check "dry run signs and records nothing" "0|0" \
+  "$(grep -c '^cosign sign' "$SIGN_LOG" || true)|$(wc -l < "$RL_SIGN_SUBJECTS" | tr -d ' ')"
+for bad in "" "sha256:abc" "latest" "${digest_a^^}" "sha512:${digest_a#sha256:}"; do
+  check_status "refuses to sign without a sha256 digest [${bad}]" 1 env DRY_RUN=false bash -c \
+    "source '${lib}'; RL_SIGN_SUBJECTS='${RL_SIGN_SUBJECTS}'; rl_sign_artifact ghcr.test/kubemoot/a '${bad}'"
+done
+check "and says so" "ERROR: refusing to sign ghcr.test/kubemoot/a without a sha256 digest (got [1.0.0])" \
+  "$(DRY_RUN=false rl_sign_artifact ghcr.test/kubemoot/a 1.0.0 2>&1 >/dev/null || true)"
+check "a refused digest signs nothing" 0 "$(grep -c '^cosign sign' "$SIGN_LOG" || true)"
+check "signs by digest" "signed ghcr.test/kubemoot/a@${digest_a}" \
+  "$(DRY_RUN=false rl_sign_artifact ghcr.test/kubemoot/a "$digest_a")"
+check "with cosign sign --yes" 1 "$(grep -cx "cosign sign --yes ghcr.test/kubemoot/a@${digest_a}" "$SIGN_LOG")"
+check "and records it" "ghcr.test/kubemoot/a|${digest_a}" "$(tr '\t' '|' < "$RL_SIGN_SUBJECTS")"
+: > "$SIGN_LOG"
+check_status "signed finds a signature from this workflow" 0 rl_signed "ghcr.test/kubemoot/a@${digest_a}"
+check_status "signed finds none on another artifact" 1 rl_signed "ghcr.test/kubemoot/a@${digest_b}"
+check_status "signed is false without a signing identity" 1 env bash -c \
+  "source '${lib}'; rl_signed 'ghcr.test/kubemoot/a@${digest_a}'"
+check "checks the signature against identity and issuer" 1 \
+  "$(grep -cx "cosign verify ghcr.test/kubemoot/a@${digest_a} --certificate-identity ${RL_SIGN_IDENTITY} --certificate-oidc-issuer https://token.actions.githubusercontent.com" "$SIGN_LOG")"
+: > "$SIGN_LOG"
+check "does not sign again what this workflow signed" "already signed ghcr.test/kubemoot/a@${digest_a}" \
+  "$(DRY_RUN=false rl_sign_artifact ghcr.test/kubemoot/a "$digest_a")"
+check "but records it again for this release" "0|2" \
+  "$(grep -c '^cosign sign' "$SIGN_LOG" || true)|$(wc -l < "$RL_SIGN_SUBJECTS" | tr -d ' ')"
+DRY_RUN=false rl_sign_artifact ghcr.test/kubemoot/a "$digest_a" earlier >/dev/null
+check "an earlier release's signed artifact is not recorded" 2 "$(wc -l < "$RL_SIGN_SUBJECTS" | tr -d ' ')"
+DRY_RUN=false rl_sign_artifact ghcr.test/kubemoot/b "$digest_b" earlier >/dev/null
+check "an earlier release's unsigned artifact is signed and recorded" "1|3" \
+  "$(grep -cx "cosign sign --yes ghcr.test/kubemoot/b@${digest_b}" "$SIGN_LOG")|$(wc -l < "$RL_SIGN_SUBJECTS" | tr -d ' ')"
+check_status "a signing failure fails" 1 env DRY_RUN=false COSIGN_FAIL=kubemoot/c bash -c \
+  "source '${lib}'; RL_SIGN_SUBJECTS='${RL_SIGN_SUBJECTS}'; rl_sign_artifact ghcr.test/kubemoot/c '${digest_a}'"
+check "and names the reference" "ERROR: signing ghcr.test/kubemoot/c@${digest_a} failed" \
+  "$( (DRY_RUN=false COSIGN_FAIL=kubemoot/c rl_sign_artifact ghcr.test/kubemoot/c "$digest_a" 2>&1 >/dev/null) || true)"
+check "and records nothing" 3 "$(wc -l < "$RL_SIGN_SUBJECTS" | tr -d ' ')"
+
+check "chart repository from the packaged chart's name" "ghcr.test/kubemoot/charts/kubemoot-operator" \
+  "$(RELEASE_REGISTRY=ghcr.test/kubemoot rl_chart_repo /x/kubemoot-operator.tgz)"
+check "subjects as the attest matrix" \
+  "[{\"name\":\"ghcr.test/kubemoot/a\",\"digest\":\"${digest_a}\"},{\"name\":\"ghcr.test/kubemoot/a\",\"digest\":\"${digest_a}\"},{\"name\":\"ghcr.test/kubemoot/b\",\"digest\":\"${digest_b}\"}]" \
+  "$(rl_sign_subjects_json)"
+: > "$RL_SIGN_SUBJECTS"
+check "no subjects is an empty matrix" "[]" "$(rl_sign_subjects_json)"
+PATH="$saved_path"
+rm -rf "$sign_dir"
 
 if [ "$failures" -ne 0 ]; then
   echo "${failures} test(s) failed"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for release candidates and promotion. Sourced, never run.
+# Shared helpers for release candidates, promotion, and signing. Sourced, never run.
 #
 # The single copy for every Kubemoot repository. A workflow reaches it through
 # $RELEASE_LIB, which the release-candidate-version and setup actions of this repository
@@ -554,4 +554,113 @@ rl_promote_single() {
   rl_make_tag "$final" "$rc_tag"
   rl_push_new_tags >&2
   printf 'final_tag=%s\nprevious_tag=%s\ncommit=%s\nrc_tag=%s\n' "$final" "$prev" "$src" "$rc_tag"
+}
+
+# Release signing. Keyless: cosign signs each image or chart by digest in the release
+# registry with the GitHub OIDC identity of the running workflow, so no key is stored
+# anywhere; the signature is stored in the registry next to the artifact. An artifact
+# that already carries a signature from this workflow is not signed again. Signed
+# references are recorded in OUT_DIR/subjects.tsv (repository, digest), from which the
+# workflow's attest job records SLSA build provenance. A dry run signs nothing and
+# records nothing, but checks that cosign runs and prints the identity the signatures
+# would carry.
+#
+# Verify a signature:
+#   cosign verify <repository>@<digest> \
+#     --certificate-identity https://github.com/<owner>/<repo>/.github/workflows/publish-release.yaml@refs/heads/main \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+#
+# Env: DRY_RUN, RELEASE_REGISTRY, GHCR_USERNAME and GHCR_TOKEN (cosign logs in to the
+# release registry with them on a real run), and the GitHub Actions variables
+# ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN (present when the job
+# has id-token: write), GITHUB_SERVER_URL, and GITHUB_WORKFLOW_REF.
+RL_SIGN_ISSUER="https://token.actions.githubusercontent.com"
+RL_SIGN_IDENTITY=""
+RL_SIGN_SUBJECTS=""
+
+# rl_sign_preflight OUT_DIR: before anything is published, cosign must run and, for a
+# real run or any run in GitHub Actions, the job must be able to mint the OIDC token
+# cosign signs with. A real run logs cosign in to the release registry.
+rl_sign_preflight() {
+  local version
+  RL_SIGN_SUBJECTS="$1/subjects.tsv"
+  : > "$RL_SIGN_SUBJECTS"
+  version=$(cosign version 2>/dev/null | sed -nE 's/^GitVersion:[[:space:]]+//p' || true)
+  if [ -z "$version" ]; then
+    echo "ERROR: cosign is required to sign the release and does not run" >&2
+    return 1
+  fi
+  _rl_sign_require_oidc || return 1
+  [ -z "${GITHUB_WORKFLOW_REF:-}" ] || RL_SIGN_IDENTITY="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_WORKFLOW_REF}"
+  echo "signing: cosign ${version}, identity ${RL_SIGN_IDENTITY:-<workflow>@<ref>}, issuer ${RL_SIGN_ISSUER}"
+  rl_is_dry && return 0
+  _rl_sign_login
+}
+
+# _rl_sign_require_oidc: a real run, and any run in GitHub Actions, needs the OIDC token
+# request variables a job with id-token: write has.
+_rl_sign_require_oidc() {
+  if { [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; } \
+     && { ! rl_is_dry || [ "${GITHUB_ACTIONS:-}" = "true" ]; }; then
+    echo "ERROR: no GitHub OIDC token for keyless signing: the job needs permissions id-token: write" >&2
+    return 1
+  fi
+}
+
+# _rl_sign_login: log cosign in to the release registry host, where the signatures go.
+_rl_sign_login() {
+  if [ -z "${GHCR_TOKEN:-}" ] || [ -z "${GHCR_USERNAME:-}" ]; then
+    echo "ERROR: GHCR_USERNAME and GHCR_TOKEN are required to store the signatures" >&2
+    return 1
+  fi
+  if ! echo "${GHCR_TOKEN}" | cosign login "${RELEASE_REGISTRY%%/*}" -u "${GHCR_USERNAME}" --password-stdin; then
+    echo "ERROR: cosign cannot log in to ${RELEASE_REGISTRY%%/*}" >&2
+    return 1
+  fi
+}
+
+# rl_signed REF: true when REF already carries a signature from this workflow.
+rl_signed() {
+  [ -n "$RL_SIGN_IDENTITY" ] && cosign verify "$1" --certificate-identity "$RL_SIGN_IDENTITY" \
+    --certificate-oidc-issuer "$RL_SIGN_ISSUER" >/dev/null 2>&1
+}
+
+# rl_sign_artifact REPOSITORY DIGEST [earlier]: sign REPOSITORY@DIGEST in the release
+# registry and record it for the provenance attestation. An artifact already signed by
+# this workflow is not signed again; it is still recorded unless "earlier" says an
+# earlier release published it (and attested it then). A failure returns non-zero,
+# which stops the release before any tag is pushed.
+rl_sign_artifact() {
+  local repo="$1" digest="$2" earlier="${3:-}"
+  if rl_is_dry; then
+    echo "sign ${repo}@${digest} (dry run: not signed)"
+    return 0
+  fi
+  if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "ERROR: refusing to sign ${repo} without a sha256 digest (got [${digest}])" >&2
+    return 1
+  fi
+  if rl_signed "${repo}@${digest}"; then
+    echo "already signed ${repo}@${digest}"
+    [ -z "$earlier" ] || return 0
+  else
+    if ! cosign sign --yes "${repo}@${digest}"; then
+      echo "ERROR: signing ${repo}@${digest} failed" >&2
+      return 1
+    fi
+    echo "signed ${repo}@${digest}"
+  fi
+  printf '%s\t%s\n' "$repo" "$digest" >> "$RL_SIGN_SUBJECTS"
+}
+
+# rl_chart_repo TGZ: the release registry repository of a packaged chart.
+rl_chart_repo() {
+  echo "${RELEASE_REGISTRY}/charts/$(helm show chart "$1" | sed -n 's/^name: //p')"
+}
+
+# rl_sign_subjects_json: the recorded references as a JSON array of {name, digest}, the
+# matrix of the workflow's attest job.
+rl_sign_subjects_json() {
+  awk -F'\t' 'BEGIN { printf "[" } NR > 1 { printf "," } { printf "{\"name\":\"%s\",\"digest\":\"%s\"}", $1, $2 } END { print "]" }' \
+    "$RL_SIGN_SUBJECTS"
 }

@@ -8,7 +8,7 @@ The release pipeline pieces that every Kubemoot repository shares, kept in one p
 | --- | --- |
 | `release-candidate-version/` | Composite action: computes the next release candidate `X.Y.Z-rc.N` for a tag prefix from the conventional commits since the last final `<prefix>X.Y.Z` tag, and decides whether to build it |
 | `setup/` | Composite action: exports `RELEASE_LIB` for a job that does not compute a version (promotion, script tests) |
-| `release-lib.sh` | Bash helpers for release candidates and promotion (`rl_*` functions), sourced by both actions and by the repositories' release scripts |
+| `release-lib.sh` | Bash helpers for release candidates, promotion, and release signing (`rl_*` functions), sourced by both actions and by the repositories' release scripts |
 | `tests/test-release-lib.sh` | Tests for `release-lib.sh` |
 
 ## Use
@@ -81,6 +81,32 @@ An image of another repository is written in a values file with the tag `0.0.0`
 All of them resolve every image before changing the file and fail on an image they
 cannot resolve; `rl_stamp_image`, `rl_image_placeholders`, `rl_image_tag`,
 `rl_latest_remote_final`, and `rl_latest_version` are the pieces they use.
+
+## Signing
+
+A publish script signs what it releases with the `rl_sign_*` helpers: keyless cosign,
+by digest, under the GitHub OIDC identity of the running workflow (the job needs
+`id-token: write`), so no key is stored anywhere.
+
+- `rl_sign_preflight OUT_DIR` runs before anything is published: cosign must run, the
+  job must be able to mint the OIDC token, and a real run logs cosign in to
+  `RELEASE_REGISTRY` with `GHCR_USERNAME` and `GHCR_TOKEN`. A dry run only prints the
+  identity the signatures would carry.
+- `rl_sign_artifact REPOSITORY DIGEST [earlier]` signs `REPOSITORY@DIGEST`, unless this
+  workflow signed it already, and records it in `OUT_DIR/subjects.tsv`; `earlier` leaves
+  out an artifact an earlier release published and attested. A failure stops the
+  release before any tag.
+- `rl_chart_repo TGZ` is the release registry repository of a packaged chart.
+- `rl_sign_subjects_json` prints the recorded references as the `[{name, digest}]`
+  matrix of the workflow's `actions/attest` job, which records SLSA build provenance.
+
+Verify a signature:
+
+```bash
+cosign verify <repository>@<digest> \
+  --certificate-identity https://github.com/<owner>/<repo>/.github/workflows/publish-release.yaml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
 
 ## Versions
 
