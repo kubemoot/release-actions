@@ -15,3 +15,16 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "ci"
+
+  - package-ecosystem: docker
+    directories:
+      - "/build-image/buildah"
+      - "/build-image/buildpacks"
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"

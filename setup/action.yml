@@ -3,12 +3,17 @@ description: >-
   Exports RELEASE_LIB, the path of this repository's release-lib.sh, for the job's
   later steps, so a workflow or script sources the shared release helpers without a
   copy of its own: source "${RELEASE_LIB}". A job that runs release-candidate-version
-  already has RELEASE_LIB and does not need this action.
+  already has RELEASE_LIB and does not need this action. Also exports BUILD_IMAGE_DIR,
+  the path of this repository's build-image directory, whose scripts build an image in
+  the cluster with Paketo buildpacks or Buildah and push it to the registry.
 
 outputs:
   lib:
     description: The path of release-lib.sh (the same value as RELEASE_LIB)
     value: ${{ steps.lib.outputs.lib }}
+  build-image-dir:
+    description: The path of the build-image directory (the same value as BUILD_IMAGE_DIR)
+    value: ${{ steps.lib.outputs.build-image-dir }}
 
 runs:
   using: composite
@@ -17,7 +22,11 @@ runs:
       shell: bash
       env:
         LIB: ${{ github.action_path }}/../release-lib.sh
+        BUILD_IMAGE: ${{ github.action_path }}/../build-image
       run: |
         lib="$(realpath -e "${LIB}")"
+        build_image="$(realpath -e "${BUILD_IMAGE}")"
         echo "RELEASE_LIB=${lib}" >> "$GITHUB_ENV"
+        echo "BUILD_IMAGE_DIR=${build_image}" >> "$GITHUB_ENV"
         echo "lib=${lib}" >> "$GITHUB_OUTPUT"
+        echo "build-image-dir=${build_image}" >> "$GITHUB_OUTPUT"

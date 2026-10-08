@@ -1,5 +1,5 @@
-# Tests for release-lib.sh and the two actions. Pushes to main run it through the
-# Release workflow, which tags only after it passes.
+# Tests for release-lib.sh, the build-image scripts and the two actions. Pushes to main
+# run it through the Release workflow, which tags only after it passes.
 name: CI
 
 on:
@@ -24,21 +24,31 @@ jobs:
           fetch-depth: 0
 
       - name: Shellcheck
-        run: shellcheck -x release-lib.sh tests/*.sh
+        run: shellcheck -x release-lib.sh build-image/*.sh tests/*.sh
 
       - name: Test release-lib.sh
         run: bash tests/test-release-lib.sh
+
+      - name: Test the build-image scripts
+        run: |
+          bash tests/test-build-image-buildpacks.sh
+          bash tests/test-build-image-buildah.sh
 
       - name: Run the setup action
         id: setup
         uses: ./setup
 
-      - name: Check the setup action's RELEASE_LIB
+      - name: Check the setup action's RELEASE_LIB and BUILD_IMAGE_DIR
         env:
           LIB_OUTPUT: ${{ steps.setup.outputs.lib }}
+          BUILD_IMAGE_OUTPUT: ${{ steps.setup.outputs.build-image-dir }}
         run: |
           test "${RELEASE_LIB}" = "$(realpath release-lib.sh)"
           test "${LIB_OUTPUT}" = "${RELEASE_LIB}"
+          test "${BUILD_IMAGE_DIR}" = "$(realpath build-image)"
+          test "${BUILD_IMAGE_OUTPUT}" = "${BUILD_IMAGE_DIR}"
+          test -x "${BUILD_IMAGE_DIR}/build-image-buildpacks.sh"
+          test -x "${BUILD_IMAGE_DIR}/build-image-buildah.sh"
           # shellcheck source=/dev/null
           source "${RELEASE_LIB}"
           rl_is_rc 0.1.0-rc.1
