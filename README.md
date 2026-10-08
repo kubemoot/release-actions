@@ -7,9 +7,11 @@ The release pipeline pieces that every Kubemoot repository shares, kept in one p
 | Path | What it is |
 | --- | --- |
 | `release-candidate-version/` | Composite action: computes the next release candidate `X.Y.Z-rc.N` for a tag prefix from the conventional commits since the last final `<prefix>X.Y.Z` tag, and decides whether to build it |
-| `setup/` | Composite action: exports `RELEASE_LIB` for a job that does not compute a version (Publish Release, script tests) |
+| `setup/` | Composite action: exports `RELEASE_LIB` for a job that does not compute a version (Publish Release, script tests), and `BUILD_IMAGE_DIR` |
 | `release-lib.sh` | Bash helpers for release candidates, publishing releases, and release signing (`rl_*` functions), sourced by both actions and by the repositories' release scripts |
+| `build-image/` | Scripts that build an image in the cluster and push it to the registry: `build-image-buildpacks.sh` (Paketo buildpacks), `build-image-buildah.sh` (a Dockerfile with Buildah), the shared `build-image-lib.sh`, and the builder, run and Buildah images pinned by tag and digest in `buildpacks/images.yaml` and `buildah/images.yaml` |
 | `tests/test-release-lib.sh` | Tests for `release-lib.sh` |
+| `tests/test-build-image-*.sh` | Tests for the build-image scripts |
 | `.github/workflows/all-checks.yaml` | Reusable workflow: the one required check for a pull request; waits for every other check on the commit and passes only when all passed or were skipped |
 
 ## Use
@@ -83,6 +85,43 @@ All of them resolve every image before changing the file and fail on an image th
 cannot resolve; `rl_stamp_image`, `rl_image_placeholders`, `rl_image_tag`,
 `rl_latest_remote_final`, and `rl_latest_version` are the pieces they use.
 
+## Build an image
+
+The `setup` action also exports `BUILD_IMAGE_DIR`, the path of `build-image/`. A job on a
+self-hosted runner in the cluster (with `kubectl` and RBAC to run pods in its namespace)
+builds an image in a short-lived pod and pushes it to the registry:
+
+```yaml
+      - uses: kubemoot/release-actions/setup@<sha> # vX.Y.Z
+
+      - env:
+          REGISTRY: registry.example.org
+          REGISTRY_HOST_IP: 192.0.2.10   # the in-cluster address the registry name points at
+        run: |
+          "${BUILD_IMAGE_DIR}/build-image-buildpacks.sh" \
+            --pod "buildpacks-app-${GITHUB_SHA:0:8}-${GITHUB_RUN_NUMBER}" \
+            --sha "${GITHUB_SHA}" --ref "${GITHUB_REF}" \
+            --builder builder --run-image run-base \
+            --buildpack paketo-buildpacks/nodejs \
+            --env BP_NODE_RUN_SCRIPTS=build \
+            app-dir "${REGISTRY}/project/app"
+```
+
+- `build-image-buildpacks.sh` runs the lifecycle `creator` from a pinned Paketo builder.
+  The pod runs as a non-root user with every capability dropped, which Pod Security
+  "restricted" admits. `--builder` and `--run-image` name entries of
+  `buildpacks/images.yaml`; `--buildpack` (repeatable) replaces the builder's detection
+  order with the named buildpacks; `--env KEY=VALUE` sets a build-time variable.
+- `build-image-buildah.sh` builds a Dockerfile with Buildah in a user-namespaced pod
+  (`hostUsers: false`), which Pod Security "baseline" admits. The nodes must allow user
+  namespaces and install the Localhost seccomp profile `SECCOMP_PROFILE`. `--file`,
+  `--label` and `--extra-tag` (main only) are its options.
+
+Both push `:<sha>` and `:latest` from `refs/heads/main` and only `:branch-<sha>` from any
+other ref, so a branch build never moves a tag main uses. The push credentials are the
+docker config secret `PUSH_SECRET` (default `harbor-push`) in `NAMESPACE` (default
+`arc-runners`). The header of each script lists all of its options and variables.
+
 ## Signing
 
 A publish script signs what it releases with the `rl_sign_*` helpers: keyless cosign,
@@ -121,6 +160,8 @@ except that on 0.x it bumps the minor until a maintainer runs the Release workfl
 
 ```bash
 bash tests/test-release-lib.sh
+bash tests/test-build-image-buildpacks.sh
+bash tests/test-build-image-buildah.sh
 ```
 
 CI runs them, plus shellcheck and both actions, on every pull request and push.
