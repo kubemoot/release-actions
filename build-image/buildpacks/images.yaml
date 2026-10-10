@@ -24,7 +24,7 @@ items:
   - name: builder
     image: docker.io/paketobuildpacks/ubuntu-noble-builder:0.0.203@sha256:ba79c24b55830210fc5ee06768237ab989dbaeec36adb60a986bcb8e70e4d7cd
   - name: run-tiny
-    image: docker.io/paketobuildpacks/ubuntu-noble-run-tiny:0.0.138@sha256:b1a26d91357134faa5a7f118f4e68a8c4c3278230660e8a49c924e92af6a905a
+    image: docker.io/paketobuildpacks/ubuntu-noble-run-tiny:0.0.139@sha256:ad8404837b302c1e5c0d9eb1f3d0d15db09a87642a1e69174a140e101c5d5726
   - name: run-static
     image: docker.io/paketobuildpacks/ubuntu-noble-run-static:0.0.139@sha256:d234369c34cfe96e081d4f31ec4506bd2d1927fd2a22d394d4947aa739cc28c1
   - name: run-base

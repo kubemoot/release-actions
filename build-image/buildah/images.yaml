@@ -11,4 +11,4 @@ kind: List
 metadata: {}
 items:
   - name: buildah
-    image: quay.io/buildah/stable:v1.43.4@sha256:3ad011878909103fabc3e1ff19bf6341e1d41d48ac679dddf55418c694e49c28
+    image: quay.io/buildah/stable:v1.43.4@sha256:b1899f37300ac68c25a2175eac31506e0541bb4fa8156c40ee5120a6194d20cf
