@@ -33,10 +33,11 @@ check_valid() {
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# The checked-in pin carries a tag and a digest.
+# The checked-in pin carries an -immutable tag and a digest: upstream deletes the digest
+# behind a plain version tag when it rebuilds it, daily.
 ref="$(pinned_image "${here}/buildah/images.yaml" buildah)"
-[[ "$ref" =~ ^quay\.io/buildah/stable:v[0-9.]+@sha256:[0-9a-f]{64}$ ]] && got=pinned || got="$ref"
-check "buildah/images.yaml buildah is pinned by tag and digest" pinned "$got"
+[[ "$ref" =~ ^quay\.io/buildah/stable:v[0-9.]+-immutable@sha256:[0-9a-f]{64}$ ]] && got=pinned || got="$ref"
+check "buildah/images.yaml buildah is pinned by an immutable tag and digest" pinned "$got"
 printf 'items:\n  - name: buildah\n    image: quay.io/buildah/stable:latest\n' > "${work}/unpinned.yaml"
 check_fails "an unpinned Buildah image is refused" pinned_image "${work}/unpinned.yaml" buildah
 
