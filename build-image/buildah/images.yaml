@@ -4,11 +4,14 @@
 # Not applied to the cluster. The apiVersion and kind make Dependabot's docker ecosystem
 # read this file as a Kubernetes manifest, so it refreshes each image: tag and digest.
 #
-# buildah: the upstream Buildah image (Fedora based, rebuilt as Fedora ships fixes) with
-#   the unprivileged `build` user (uid 1000) and its /etc/subuid and /etc/subgid ranges.
+# buildah: the upstream Buildah image (Fedora based) with the unprivileged `build` user
+#   (uid 1000) and its /etc/subuid and /etc/subgid ranges. Pinned by the -immutable tag:
+#   upstream rebuilds the plain version tags daily and deletes the replaced digest at once,
+#   so a digest taken from a plain tag stops resolving within a day.
+#   The -immutable tag is built once and never moved.
 apiVersion: v1
 kind: List
 metadata: {}
 items:
   - name: buildah
-    image: quay.io/buildah/stable:v1.43.4@sha256:3ad011878909103fabc3e1ff19bf6341e1d41d48ac679dddf55418c694e49c28
+    image: quay.io/buildah/stable:v1.43.4-immutable@sha256:6f237dd57d662fe3e86e6d5cae018585173913783d3a4480d729fc8b92247487
