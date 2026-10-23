@@ -52,10 +52,6 @@ check "empty version unchanged" "" "$(rl_hold_zero_major "" 0.344.0 false)"
 check_status "malformed last final fails" 1 rl_hold_zero_major 1.0.0-rc.0 0.x false
 check_status "prefixed last final fails" 1 rl_hold_zero_major 1.0.0-rc.0 v0.344.0 false
 check_status "empty computed version fails" 1 rl_held_version v "" false
-check "next chart rc from a final" "0.92.582-rc.0" "$(rl_next_chart_rc 0.92.581 false)"
-check "next chart rc counts up" "0.92.582-rc.4" "$(rl_next_chart_rc 0.92.582-rc.3 false)"
-check "next chart rc 9 -> 10" "0.92.582-rc.10" "$(rl_next_chart_rc 0.92.582-rc.9 false)"
-check "next chart rc after promotion" "0.92.583-rc.0" "$(rl_next_chart_rc 0.92.582-rc.3 true)"
 
 check_status "final is final" 0 rl_is_final 0.1.2
 check_status "rc is not final" 1 rl_is_final 0.1.2-rc.3
@@ -571,6 +567,72 @@ check "subjects as the attest matrix" \
 check "no subjects is an empty matrix" "[]" "$(rl_sign_subjects_json)"
 PATH="$saved_path"
 rm -rf "$sign_dir"
+
+# rl_commit_bump, rl_bump_version, rl_next_chart_version: a chart's candidate comes from
+# the conventional commits since its last final, limited to the chart's paths.
+check "bump major" "2.0.0" "$(rl_bump_version 1.4.2 major)"
+check "bump minor" "0.93.0" "$(rl_bump_version 0.92.594 minor)"
+check "bump patch" "0.92.595" "$(rl_bump_version 0.92.594 patch)"
+check "bump is decimal" "0.9.0" "$(rl_bump_version 0.08.3 minor)"
+check_status "unknown bump fails" 1 rl_bump_version 0.1.0 huge
+
+cd "$(mktemp -d)"
+git init -q -b main
+git config user.email test@example.com
+git config user.name test
+mkdir chart other
+ccommit() { # SUBJECT DIR [BODY]: a commit that adds a file in DIR
+  echo "$RANDOM" > "$2/f$RANDOM"
+  git add "$2"
+  if [ -n "${3:-}" ]; then git commit -q -m "$1" -m "$3"; else git commit -q -m "$1"; fi
+  git rev-parse HEAD
+}
+next() { rl_next_chart_version chart-v "$1" "${2:-false}" "${3:-}" chart; }
+
+k0=$(ccommit "chore: init" chart)
+check_status "no final and no first version fails" 1 rl_next_chart_version chart-v "$k0" false "" chart
+check "no final starts at the first version" "0.1.0-rc.0" "$(rl_next_chart_version chart-v "$k0" false 0.1.0-rc.0 chart)"
+git tag -a chart-v0.1.0-rc.0 -m rc "$k0"
+check "no final counts up the first version" "0.1.0-rc.1" "$(rl_next_chart_version chart-v "$k0" false 0.1.0-rc.0 chart)"
+
+git tag -a chart-v0.3.0-rc.7 -m rc "$k0"
+check "no final continues the latest candidate's stream" "0.3.0-rc.8" "$(rl_next_chart_version chart-v "$k0" false 0.1.0-rc.0 chart)"
+git tag -a chart-v0.92.594 -m final "$k0"
+git tag -a chart-v0.92.595-rc.152 -m rc "$k0"
+check "no new commits: next patch, past a stale rc counter" "0.92.595-rc.153" "$(next "$k0")"
+k1=$(ccommit "docs: explain values" chart)
+check "docs only is a patch" "0.92.595-rc.153" "$(next "$k1")"
+k2=$(ccommit "fix(api): empty input" chart)
+check "fix is a patch" "0.92.595-rc.153" "$(next "$k2")"
+k3=$(ccommit "chore: elsewhere" other)
+check "a commit outside the path is ignored" "0.92.595-rc.153" "$(next "$k3")"
+check "only commits outside the path: no bump" "none" "$(rl_commit_bump "${k2}..${k3}" chart)"
+k4=$(ccommit "feat: new value" chart)
+check "feat is a minor" "0.93.0-rc.0" "$(next "$k4")"
+git tag -a chart-v0.93.0-rc.0 -m rc "$k4"
+check "an unpublished target counts its rc up" "0.93.0-rc.1" "$(next "$k4")"
+k5=$(ccommit "fix: later" chart)
+check "later fix keeps the minor target" "0.93.0-rc.1" "$(next "$k5")"
+git tag -a chart-v0.93.0-rc.1 -m rc "$k5"
+k6=$(ccommit "feat!: rename the kind" chart)
+check "feat! at major 0 is held to the next minor" "0.93.0-rc.2" "$(next "$k6")"
+check "feat! leaves major 0 only when allowed" "1.0.0-rc.0" "$(next "$k6" true)"
+k7=$(ccommit "refactor: tidy" chart "BREAKING CHANGE: values renamed")
+check "BREAKING CHANGE footer is major" "major" "$(rl_commit_bump "${k6}..${k7}" chart)"
+check "BREAKING CHANGE footer is held at major 0" "0.93.0-rc.2" "$(next "$k7")"
+kx=$(git commit -q --allow-empty -m "fix(x)!: gone"; git rev-parse HEAD)
+check "fix! is major" "major" "$(rl_commit_bump "${k7}..${kx}")"
+git reset -q --hard "$k7"
+kd=$(git commit -q --allow-empty -m "docs: mention BREAKING CHANGE rules"; git rev-parse HEAD)
+check "BREAKING CHANGE words in a subject are not breaking" "patch" "$(rl_commit_bump "${kx}..${kd}")"
+git reset -q --hard "$k7"
+git tag -a chart-v0.93.0 -m final "$k7"
+check "a published target starts the next bump from the commits after it" "0.93.1-rc.0" "$(next "$k7")"
+k8=$(ccommit "feat: after the release" chart)
+check "feat after the final is the next minor" "0.94.0-rc.0" "$(next "$k8")"
+check "another prefix is not counted" "0.1.0-rc.0" "$(rl_next_chart_version other-v "$k8" false 0.1.0-rc.0 chart)"
+check "after 1.0 a breaking change is a major" "2.0.0-rc.0" "$( git tag -a chart-v1.4.0 -m final "$k8"; k9=$(ccommit "feat!: big" chart); next "$k9")"
+cd "$repo"
 
 if [ "$failures" -ne 0 ]; then
   echo "${failures} test(s) failed"

@@ -158,21 +158,78 @@ rl_latest_final() {
     | sort -V | tail -n 1 || true
 }
 
-# rl_next_chart_rc CURRENT FINAL_PROMOTED: the next release-candidate version of a
-# chart whose version is a counter (the operator chart). CURRENT is the version in
-# Chart.yaml; FINAL_PROMOTED is "true" when the final of CURRENT's X.Y.Z is tagged.
-#   0.92.581            -> 0.92.582-rc.0  (a final: start the next patch)
-#   0.92.582-rc.3 false -> 0.92.582-rc.4
-#   0.92.582-rc.3 true  -> 0.92.583-rc.0  (0.92.582 was promoted)
-rl_next_chart_rc() {
-  local current="$1" promoted="$2" base major minor patch
-  base=$(rl_final_of "$current")
-  IFS=. read -r major minor patch <<<"$base"
-  if rl_is_rc "$current" && [ "$promoted" != "true" ]; then
-    printf '%s-rc.%s\n' "$base" "$(( ${current##*-rc.} + 1 ))"
+# rl_commit_bump RANGE [PATH...]: the largest bump the conventional commits in RANGE
+# (a git revision range such as v1.2.0..HEAD; merges skipped) ask for, limited to commits
+# that touch PATH when given: major, minor, patch, or none when no commit qualifies.
+# feat! / fix! (any type with !) or a BREAKING CHANGE footer is major, feat is minor,
+# every other commit (fix, docs, chore, refactor, or no conventional type) is a patch.
+rl_commit_bump() {
+  local range="$1" entry subject body bump=none
+  local breaking='^[a-z]+(\([^)]*\))?!:' feature='^feat(\([^)]*\))?:'
+  shift
+  local paths=()
+  [ "$#" -eq 0 ] || paths=(-- "$@")
+  while IFS= read -r -d $'\x1e' entry; do
+    [ -n "${entry//[$'\n ']/}" ] || continue
+    subject="${entry%%$'\x1f'*}"
+    subject="${subject#"${subject%%[![:space:]]*}"}"
+    body="${entry#*$'\x1f'}"
+    if [[ "$subject" =~ $breaking ]] || grep -qE '^BREAKING[ -]CHANGE(:| )' <<<"$body"; then
+      printf 'major\n'
+      return
+    elif [[ "$subject" =~ $feature ]]; then
+      bump=minor
+    elif [ "$bump" = none ]; then
+      bump="patch"
+    fi
+  done < <(git log --no-merges --format='%s%x1f%b%x1e' "$range" "${paths[@]}")
+  printf '%s\n' "$bump"
+}
+
+# rl_bump_version X.Y.Z BUMP: the version one bump (major, minor, patch) past it.
+rl_bump_version() {
+  local major minor patch
+  IFS=. read -r major minor patch <<<"$1"
+  case "$2" in
+    major) printf '%s.0.0\n' "$((10#${major} + 1))" ;;
+    minor) printf '%s.%s.0\n' "$((10#${major}))" "$((10#${minor} + 1))" ;;
+    patch) printf '%s.%s.%s\n' "$((10#${major}))" "$((10#${minor}))" "$((10#${patch} + 1))" ;;
+    *) echo "ERROR: [$2] is not a bump" >&2; return 1 ;;
+  esac
+}
+
+# rl_next_chart_version PREFIX COMMIT ALLOW_MAJOR FIRST [PATH...]: the next release
+# candidate of a chart, from the conventional commits like every other component. The
+# target X.Y.Z is one bump past the last final <prefix>X.Y.Z tag reachable from COMMIT
+# (the largest bump of the commits since it that touch PATH, a patch when none do, since
+# a rebuild then carries new image pins), held at major 0 unless ALLOW_MAJOR=true
+# (rl_hold_zero_major). The candidate is X.Y.Z-rc.N with N one past the highest existing
+# candidate of that X.Y.Z (any branch), rc.0 for a new target, so a target counts up
+# until it is published and then the next bump is computed from the commits after it.
+# With no final yet, the target is the X.Y.Z of the latest candidate reachable from
+# COMMIT, or FIRST's X.Y.Z when there is none (an error when FIRST is empty).
+rl_next_chart_version() {
+  local prefix="$1" commit="$2" allow="$3" first="${4:-}" last base bump highest n=0
+  shift 4
+  last="$(rl_latest_final "$prefix" "$commit")"
+  if [ -n "$last" ]; then
+    last="${last#"$prefix"}"
+    bump="$(rl_commit_bump "${prefix}${last}..${commit}" "$@")"
+    [ "$bump" != none ] || bump="patch"
+    base="$(rl_bump_version "$last" "$bump")"
+    base="$(rl_hold_zero_major "${base}-rc.0" "$last" "$allow")" || return 1
+    base="$(rl_final_of "$base")"
+  elif highest="$(rl_latest_rc "$prefix" "$commit")" && [ -n "$highest" ]; then
+    base="$(rl_final_of "${highest#"$prefix"}")"
+  elif rl_is_version "$first"; then
+    base="$(rl_final_of "$first")"
   else
-    printf '%s.%s.%s-rc.0\n' "$major" "$minor" "$(( patch + 1 ))"
+    echo "ERROR: no final ${prefix}X.Y.Z tag reachable from ${commit} and no first version to start from" >&2
+    return 1
   fi
+  highest="$(rl_rc_tags "$prefix" "$base" | tail -n 1)"
+  [ -z "$highest" ] || n="$((10#${highest##*-rc.} + 1))"
+  printf '%s-rc.%s\n' "$base" "$n"
 }
 
 # rl_is_version VERSION: true when VERSION is a final X.Y.Z or a candidate X.Y.Z-rc.N.

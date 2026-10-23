@@ -81,6 +81,21 @@ An image of another repository is written in a values file with the tag `0.0.0`
   from `COMMIT`, for a chart that pins images the same repository builds (Kubemoot's
   operator chart and its components).
 
+A chart that a repository builds itself (Kubemoot's operator and vllm charts) takes its
+version from the conventional commits like any other component:
+
+- `rl_next_chart_version PREFIX COMMIT ALLOW_MAJOR FIRST [PATH...]` prints the next
+  `X.Y.Z-rc.N`. `X.Y.Z` is one bump past the last final `PREFIX X.Y.Z` tag reachable from
+  `COMMIT`: the largest bump of the commits since it that touch the `PATH`s (feat is
+  minor, `!` or a `BREAKING CHANGE` footer is major, everything else is a patch, and a
+  rebuild with no such commit is a patch), held at major 0 by `rl_hold_zero_major`
+  unless `ALLOW_MAJOR` is `true`. `N` is one past the highest existing candidate of that
+  `X.Y.Z`, `0` for a new target, so a target counts its candidates up until it is
+  published and the next bump is then computed from the commits after it. With no final
+  tag yet, the target is the `X.Y.Z` of the latest candidate reachable from `COMMIT`,
+  else that of `FIRST`, or an error when `FIRST` is empty.
+- `rl_commit_bump RANGE [PATH...]` and `rl_bump_version X.Y.Z BUMP` are the pieces.
+
 All of them resolve every image before changing the file and fail on an image they
 cannot resolve; `rl_stamp_image`, `rl_image_placeholders`, `rl_image_tag`,
 `rl_latest_remote_final`, and `rl_latest_version` are the pieces they use.
