@@ -74,6 +74,16 @@ An image of another repository is written in a values file with the tag `0.0.0`
 - `rl_stamp_remote_images VALUES REMOTE` gives each `NAME:0.0.0` image the version of
   the latest final `NAME-vX.Y.Z` tag of the repository at `REMOTE`, so a chart pins only
   released images (a release candidate build of a crew chart).
+- `rl_stamp_remote_candidate_images VALUES REMOTE` gives each one the newest candidate of
+  `NAME` at `REMOTE` (`rl_latest_remote_candidate`): the highest `NAME-vX.Y.Z-rc.N`, or
+  the final `NAME-vX.Y.Z` once it exists, comparing `X.Y.Z` first (`sort -V` alone ranks
+  `0.21.0-rc.1` above `0.21.0`). A candidate chart that only a test cluster pulls uses it.
+- `rl_map_rc_images VALUES REMOTE REGISTRY` rewrites each `NAME:X.Y.Z-rc.N` pin to
+  `NAME:X.Y.Z` for a published chart, and refuses the whole file unless the tag
+  `NAME-vX.Y.Z` exists at `REMOTE` and the digests of `REGISTRY/NAME:X.Y.Z-rc.N` and
+  `REGISTRY/NAME:X.Y.Z` are equal (`rl_rc_pin_final` checks one pin). The digest comes
+  from `$RL_DIGEST_CMD` (default `crane digest --insecure`); run it on an in-cluster
+  runner that reaches the registry, never from a dev host.
 - `rl_stamp_images_like VALUES REFERENCE` gives each one the tag `REFERENCE` (another
   values file) has for it, so a published chart pins exactly what its candidate ran.
 - `rl_stamp_local_images VALUES COMMIT rc|final` gives each one the version of the
@@ -98,7 +108,8 @@ version from the conventional commits like any other component:
 
 All of them resolve every image before changing the file and fail on an image they
 cannot resolve; `rl_stamp_image`, `rl_image_placeholders`, `rl_image_tag`,
-`rl_latest_remote_final`, and `rl_latest_version` are the pieces they use.
+`rl_latest_remote_final`, `rl_latest_remote_candidate`, `rl_rc_image_pins`, and
+`rl_latest_version` are the pieces they use.
 
 ## Build an image
 
