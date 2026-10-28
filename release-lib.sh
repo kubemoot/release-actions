@@ -391,6 +391,130 @@ rl_stamp_remote_images() {
   rl_stamp_images_with "$1" _rl_remote_final_of "$2"
 }
 
+# rl_latest_remote_candidate REMOTE PREFIX: the newest candidate <prefix>X.Y.Z-rc.N or
+# final <prefix>X.Y.Z tag of the repository at REMOTE, read with git ls-remote. Tags are
+# ordered by X.Y.Z first, then a final above every rc of the same X.Y.Z, then by rc.N as
+# a number. sort -V alone puts 0.21.0-rc.1 above 0.21.0, so the key is built by hand.
+# Fails when REMOTE cannot be read or holds no such tag.
+rl_latest_remote_candidate() {
+  local remote="${1:-}" prefix="${2:-}" shown tags latest
+  shown="$(sed -E 's#//[^/@]*@#//#' <<<"$remote")"
+  if [ -z "$remote" ] || [ -z "$prefix" ]; then
+    echo "ERROR: a remote and a tag prefix are required" >&2
+    return 1
+  fi
+  if ! tags="$(git ls-remote --tags --refs "$remote" 2>/dev/null)"; then
+    echo "ERROR: cannot read the tags of ${shown}" >&2
+    return 1
+  fi
+  latest="$(awk '{ sub("^refs/tags/", "", $2); print $2 }' <<<"$tags" \
+    | grep -E "^${prefix}[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$" \
+    | sed -E "s/^${prefix}([0-9]+)\.([0-9]+)\.([0-9]+)-rc\.([0-9]+)$/\1 \2 \3 0 \4 &/; \
+      t; s/^${prefix}([0-9]+)\.([0-9]+)\.([0-9]+)$/\1 \2 \3 1 0 &/" \
+    | sort -k1,1n -k2,2n -k3,3n -k4,4n -k5,5n | tail -n 1 | awk '{ print $6 }' || true)"
+  if [ -z "$latest" ]; then
+    echo "ERROR: ${shown} has no ${prefix}X.Y.Z or ${prefix}X.Y.Z-rc.N tag" >&2
+    return 1
+  fi
+  printf '%s\n' "$latest"
+}
+
+_rl_remote_candidate_of() {
+  local tag
+  tag="$(rl_latest_remote_candidate "$1" "${2}-v")" || return 1
+  printf '%s\n' "${tag#"${2}-v"}"
+}
+
+# rl_stamp_remote_candidate_images FILE REMOTE: stamps every NAME:0.0.0 image in FILE
+# with the newest candidate of NAME at REMOTE (rl_latest_remote_candidate: the final
+# once it exists), for a candidate chart that runs the images the candidate of the other
+# repository runs. Prints "NAME VERSION" per image; resolves all before changing FILE.
+rl_stamp_remote_candidate_images() {
+  rl_stamp_images_with "$1" _rl_remote_candidate_of "$2"
+}
+
+# rl_rc_image_pins FILE: "NAME TAG" for each image FILE pins with a candidate tag
+# X.Y.Z-rc.N, sorted, each once; nothing when there are none.
+rl_rc_image_pins() {
+  if [ ! -f "${1:-}" ]; then
+    echo "ERROR: no file [${1:-}]" >&2
+    return 1
+  fi
+  { grep -oE "${RL_IMAGE_BEFORE}[a-z0-9][a-z0-9._-]*:[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+${RL_IMAGE_AFTER}" "$1" || true; } \
+    | sed -E "s/^[\"' \/]//; s/[\"' ]\$//; s/:/ /" | sort -u
+}
+
+# rl_rc_pin_final REMOTE REGISTRY NAME RC_VERSION: maps one candidate pin to its final.
+# Prints X.Y.Z when the tag NAME-vX.Y.Z exists at REMOTE and the digest of
+# REGISTRY/NAME:RC_VERSION equals the digest of REGISTRY/NAME:X.Y.Z, which proves the
+# final is the image the candidate ran. Refuses (status 1, reason on stderr) when the
+# final tag is missing, a digest cannot be read, or the digests differ. The digest comes
+# from $RL_DIGEST_CMD (default "crane digest --insecure") run with the image reference;
+# run it where the registry is reachable (an in-cluster runner), never from a dev host.
+rl_rc_pin_final() {
+  local remote="${1:-}" registry="${2:-}" name="${3:-}" rc="${4:-}" final tags rc_digest final_digest
+  local digest_cmd="${RL_DIGEST_CMD:-crane digest --insecure}"
+  if [ -z "$remote" ] || [ -z "$registry" ] || ! rl_is_rc "$rc" \
+    || ! [[ "$name" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+    echo "ERROR: a remote, a registry, an image name and an X.Y.Z-rc.N version are required, got [${name}] [${rc}]" >&2
+    return 1
+  fi
+  final="$(rl_final_of "$rc")"
+  if ! tags="$(git ls-remote --tags --refs "$remote" "refs/tags/${name}-v${final}" 2>/dev/null)"; then
+    echo "ERROR: cannot read the tags of the Kubemoot repository" >&2
+    return 1
+  fi
+  if [ -z "$tags" ]; then
+    echo "ERROR: ${name}:${rc} has no final: tag ${name}-v${final} does not exist; publish Kubemoot first" >&2
+    return 1
+  fi
+  # shellcheck disable=SC2086 # the command is a word list on purpose
+  if ! rc_digest="$($digest_cmd "${registry}/${name}:${rc}" 2>/dev/null)" || [ -z "$rc_digest" ]; then
+    echo "ERROR: cannot read the digest of ${registry}/${name}:${rc}" >&2
+    return 1
+  fi
+  # shellcheck disable=SC2086
+  if ! final_digest="$($digest_cmd "${registry}/${name}:${final}" 2>/dev/null)" || [ -z "$final_digest" ]; then
+    echo "ERROR: cannot read the digest of ${registry}/${name}:${final}" >&2
+    return 1
+  fi
+  if [ "$rc_digest" != "$final_digest" ]; then
+    echo "ERROR: ${name}:${final} (${final_digest}) is not the image ${name}:${rc} (${rc_digest}) the candidate ran; rebuild the crew candidate with force so it takes the final" >&2
+    return 1
+  fi
+  printf '%s\n' "$final"
+}
+
+# rl_map_rc_images FILE REMOTE REGISTRY: rewrites every NAME:X.Y.Z-rc.N image in FILE to
+# NAME:X.Y.Z after rl_rc_pin_final accepts it, for a published chart that pins finals
+# only. Every pin is checked before FILE changes, so one refusal leaves it as it was and
+# every refusal is reported. Prints "NAME RC FINAL" per image; a file with no candidate
+# pins is left alone.
+rl_map_rc_images() {
+  local file="${1:-}" remote="${2:-}" registry="${3:-}" pins pin name rc final work failed=0
+  pins="$(rl_rc_image_pins "$file")" || return 1
+  [ -n "$pins" ] || return 0
+  local mapped=()
+  while read -r name rc; do
+    if final="$(rl_rc_pin_final "$remote" "$registry" "$name" "$rc")"; then
+      mapped+=("${name} ${rc} ${final}")
+    else
+      failed=1
+    fi
+  done <<<"$pins"
+  [ "$failed" -eq 0 ] || return 1
+  work="$(mktemp)"
+  cp "$file" "$work"
+  for pin in "${mapped[@]}"; do
+    read -r name rc final <<<"$pin"
+    sed -E "s#${RL_IMAGE_BEFORE}${name//./\\.}:${rc//./\\.}${RL_IMAGE_AFTER}#\\1${name}:${final}\\2#g" "$work" > "$work.next"
+    mv "$work.next" "$work"
+  done
+  cat "$work" > "$file"
+  rm -f "$work"
+  printf '%s\n' "${mapped[@]}"
+}
+
 # rl_stamp_images_like FILE REFERENCE: stamps every NAME:0.0.0 image in FILE with the
 # tag REFERENCE (another values file, such as the one a tested release candidate was
 # packaged with) gives the same image, so a promoted chart pins exactly the images its

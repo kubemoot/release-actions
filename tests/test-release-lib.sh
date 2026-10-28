@@ -208,6 +208,121 @@ check "unchanged after a failed remote stamp" "$(values_yaml)" "$(< "$values")"
 check "a file without placeholders needs no remote" "" "$(rl_stamp_remote_images "$values.final" "$upstream/missing.git")"
 rm -rf "$upstream" "$values" "$values".*
 
+# rl_latest_remote_candidate: newest rc, the final once it exists, base version first.
+cand="$(mktemp -d)"
+git init -q -b main "$cand/src"
+git -C "$cand/src" -c user.email=t@e -c user.name=t commit -q --allow-empty -m init
+ctag() { git -C "$cand/src" tag "$@"; git -C "$cand/src" update-server-info 2>/dev/null || true; }
+for t in code-sandbox-v0.20.0 code-sandbox-v0.21.0-rc.9 code-sandbox-v0.21.0-rc.10 code-sandbox-v0.21.0-rc.258 \
+  artifact-access-v0.9.0-rc.2 artifact-access-v0.10.0-rc.1 artifact-access-v0.10.0 \
+  scheduling-mcp-v1.0.0-rc.3 scheduling-mcp-v0.99.9 \
+  my-code-sandbox-v9.0.0 code-sandbox-v0.30.0-beta.1 code-sandbox-v0.30.0-rc.x only-final-v1.2.3; do
+  ctag "$t"
+done
+git clone -q --bare "$cand/src" "$cand/remote.git"
+check "newest rc by number, not text" "code-sandbox-v0.21.0-rc.258" "$(rl_latest_remote_candidate "$cand/remote.git" code-sandbox-v)"
+check "a higher rc outranks an older final" "scheduling-mcp-v1.0.0-rc.3" "$(rl_latest_remote_candidate "$cand/remote.git" scheduling-mcp-v)"
+check "the final outranks its own rcs" "artifact-access-v0.10.0" "$(rl_latest_remote_candidate "$cand/remote.git" artifact-access-v)"
+check "a final alone is a candidate" "only-final-v1.2.3" "$(rl_latest_remote_candidate "$cand/remote.git" only-final-v)"
+check_status "no candidate at all fails" 1 rl_latest_remote_candidate "$cand/remote.git" none-v
+check_status "other pre-releases do not count" 1 rl_latest_remote_candidate "$cand/remote.git" my-v
+check_status "unreadable remote fails" 1 rl_latest_remote_candidate "$cand/missing.git" code-sandbox-v
+check_status "remote needs a prefix" 1 rl_latest_remote_candidate "$cand/remote.git" ""
+git -C "$cand/src" tag code-sandbox-v0.21.0
+git -C "$cand/src" tag code-sandbox-v0.22.0-rc.1
+git -C "$cand/src" push -q "$cand/remote.git" --tags
+check "the final of the same base wins over rc.258" "code-sandbox-v0.22.0-rc.1" "$(rl_latest_remote_candidate "$cand/remote.git" code-sandbox-v)"
+git -C "$cand/src" tag -d code-sandbox-v0.22.0-rc.1 >/dev/null
+git -C "$cand/src" push -q "$cand/remote.git" :refs/tags/code-sandbox-v0.22.0-rc.1
+check "0.21.0 ranks above 0.21.0-rc.258" "code-sandbox-v0.21.0" "$(rl_latest_remote_candidate "$cand/remote.git" code-sandbox-v)"
+check "a credential in the remote is not echoed" "0" \
+  "$(rl_latest_remote_candidate "https://x-access-token:s3cret@127.0.0.1:9/none.git" v 2>&1 | grep -c s3cret || true)"
+
+# rl_stamp_remote_candidate_images
+values="$(mktemp)"
+git -C "$cand/src" tag -d code-sandbox-v0.21.0 >/dev/null
+git -C "$cand/src" push -q "$cand/remote.git" :refs/tags/code-sandbox-v0.21.0
+values_yaml > "$values"
+printf '%s\n' "  k:" "    image: \"scheduling-mcp:0.0.0\"" >> "$values"
+got="$(rl_stamp_remote_candidate_images "$values" "$cand/remote.git" 2>/dev/null)"
+check "candidate images resolved" "artifact-access 0.10.0|code-sandbox 0.21.0-rc.258|scheduling-mcp 1.0.0-rc.3" \
+  "$(tr '\n' '|' <<<"$got" | sed 's/|$//')"
+check "candidate images stamped" "1" "$(grep -c 'image: "code-sandbox:0.21.0-rc.258"' "$values")"
+check "no placeholder left after the candidate stamp" "" "$(rl_image_placeholders "$values")"
+values_yaml > "$values"
+printf 'image: "agent-runtime:0.0.0"\nimage: code-sandbox:0.0.0\n' > "$values.unreleased"
+check_status "an image with no tag at all fails" 1 rl_stamp_remote_candidate_images "$values.unreleased" "$cand/remote.git"
+check "and leaves the file unchanged" "1" "$(grep -c 'code-sandbox:0.0.0' "$values.unreleased")"
+check_status "an unreadable remote fails the candidate stamp" 1 rl_stamp_remote_candidate_images "$values" "$cand/missing.git"
+check "unchanged after a failed candidate stamp" "$(values_yaml)" "$(< "$values")"
+printf 'image: "code-sandbox:0.21.0"\n' > "$values.final"
+check "a file without placeholders needs no remote" "" "$(rl_stamp_remote_candidate_images "$values.final" "$cand/missing.git")"
+
+# rl_rc_image_pins, rl_rc_pin_final, rl_map_rc_images: the digest command is a stub
+# that reads "<name>:<tag>=<digest>" lines from a table.
+table="$(mktemp)"
+digest_stub() {
+  local ref="${1##*/}"
+  grep -m1 "^${ref}=" "$table" | cut -d= -f2 | grep .
+}
+export RL_DIGEST_CMD=digest_stub
+export -f digest_stub
+for t in artifact-access-v0.343.0 code-sandbox-v0.21.0; do ctag "$t"; done
+git -C "$cand/src" push -q "$cand/remote.git" --tags
+printf '%s\n' "code-sandbox:0.21.0-rc.258=sha256:aaa" "code-sandbox:0.21.0=sha256:aaa" \
+  "artifact-access:0.343.0-rc.2=sha256:bbb" "artifact-access:0.343.0=sha256:bbb" \
+  "scheduling-mcp:1.0.0-rc.3=sha256:ccc" "scheduling-mcp:1.0.0=sha256:ddd" \
+  "agent-runtime:0.5.0-rc.1=sha256:eee" "orphan:2.0.0-rc.1=sha256:fff" "orphan:2.0.0=sha256:fff" > "$table"
+remote="$cand/remote.git"
+rcv() {
+  printf '%s\n' "a:" "  image: \"code-sandbox:0.21.0-rc.258\"" "b:" "  image: ghcr.io/kubemoot/artifact-access:0.343.0-rc.2" \
+    "c:" "  image: artifact-access:0.343.0-rc.2" "d:" "  image: quay.io/acme/other:v0.0.63" "e: 0.21.0-rc.258"
+}
+rcv > "$values"
+check "candidate pins found once each" "artifact-access 0.343.0-rc.2|code-sandbox 0.21.0-rc.258" \
+  "$(rl_rc_image_pins "$values" | tr '\n' '|' | sed 's/|$//')"
+check_status "pins of a missing file fail" 1 rl_rc_image_pins "$values.none"
+check "pin accepted when the digests match" "0.21.0" "$(rl_rc_pin_final "$remote" reg code-sandbox 0.21.0-rc.258 2>/dev/null)"
+check_status "pin refused when the final tag is missing" 1 rl_rc_pin_final "$remote" reg agent-runtime 0.5.0-rc.1
+check "the missing final says to publish Kubemoot first" "1" \
+  "$(rl_rc_pin_final "$remote" reg agent-runtime 0.5.0-rc.1 2>&1 | grep -c 'publish Kubemoot first')"
+check_status "pin refused when the digests differ" 1 rl_rc_pin_final "$remote" reg scheduling-mcp 1.0.0-rc.3
+ctag scheduling-mcp-v1.0.0
+git -C "$cand/src" push -q "$remote" --tags
+check_status "pin refused when the digests differ and the tag exists" 1 rl_rc_pin_final "$remote" reg scheduling-mcp 1.0.0-rc.3
+check "the mismatch says to rebuild with force" "1" \
+  "$(rl_rc_pin_final "$remote" reg scheduling-mcp 1.0.0-rc.3 2>&1 | grep -c 'with force')"
+check_status "pin refused when a digest cannot be read" 1 rl_rc_pin_final "$remote" reg orphan 2.0.0-rc.9
+ctag orphan-v2.0.0
+git -C "$cand/src" push -q "$remote" --tags
+check_status "pin refused when the rc digest is unreadable" 1 rl_rc_pin_final "$remote" reg orphan 2.0.0-rc.9
+check_status "pin refuses a final as the candidate" 1 rl_rc_pin_final "$remote" reg code-sandbox 0.21.0
+check_status "pin refuses a bad image name" 1 rl_rc_pin_final "$remote" reg "Bad Name" 0.21.0-rc.258
+check_status "pin refuses an unreadable remote" 1 rl_rc_pin_final "$cand/missing.git" reg code-sandbox 0.21.0-rc.258
+check_status "pin refuses an empty registry" 1 rl_rc_pin_final "$remote" "" code-sandbox 0.21.0-rc.258
+# shellcheck disable=SC2016 # the inner script expands its own arguments
+check_status "pin refuses an empty digest" 1 env RL_DIGEST_CMD=true bash -c 'source "$1"; rl_rc_pin_final "$2" reg code-sandbox 0.21.0-rc.258' _ "$lib" "$remote"
+
+got="$(rl_map_rc_images "$values" "$remote" reg 2>/dev/null)"
+check "pins mapped" "artifact-access 0.343.0-rc.2 0.343.0|code-sandbox 0.21.0-rc.258 0.21.0" "$(tr '\n' '|' <<<"$got" | sed 's/|$//')"
+check "no candidate pin left" "" "$(rl_rc_image_pins "$values")"
+check "every reference mapped" "3" "$(grep -cE '(code-sandbox:0\.21\.0"|artifact-access:0\.343\.0$)' "$values")"
+check "registry path kept" "1" "$(grep -c '^  image: ghcr.io/kubemoot/artifact-access:0.343.0$' "$values")"
+check "third-party and unrelated lines untouched" "2" "$(grep -cE '(quay.io/acme/other:v0.0.63|^e: 0.21.0-rc.258)' "$values")"
+rcv > "$values"
+printf '%s\n' "f:" "  image: scheduling-mcp:1.0.0-rc.3" "g:" "  image: agent-runtime:0.5.0-rc.1" >> "$values"
+cp "$values" "$values.before"
+errs="$(rl_map_rc_images "$values" "$remote" reg 2>&1 >/dev/null || true)"
+check_status "one refusal fails the whole map" 1 rl_map_rc_images "$values" "$remote" reg
+check "every refusal is reported" "2" "$(grep -c '^ERROR' <<<"$errs")"
+check "a refused map leaves the file unchanged" "$(< "$values.before")" "$(< "$values")"
+printf 'image: "code-sandbox:0.21.0"\n' > "$values"
+check_status "a file with no candidate pins passes" 0 rl_map_rc_images "$values" "$remote" reg
+check "and prints nothing" "" "$(rl_map_rc_images "$values" "$remote" reg 2>/dev/null)"
+check_status "a missing file fails the map" 1 rl_map_rc_images "$values.none" "$remote" reg
+unset RL_DIGEST_CMD
+rm -rf "$cand" "$values" "$values".* "$table"
+
 # rl_release_needed: expected and unexpected inputs (tags checked in the repo below).
 needed() { rl_release_needed "$@" 2>/dev/null; }
 
