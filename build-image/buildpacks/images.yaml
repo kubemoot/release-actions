@@ -20,12 +20,12 @@ kind: List
 metadata: {}
 items:
   - name: builder-java-tiny
-    image: docker.io/paketobuildpacks/builder-noble-java-tiny:0.0.197@sha256:b95da27fce97b58037f0c11ae934760c50730da4c9a24976205b53638592eba9
+    image: docker.io/paketobuildpacks/builder-noble-java-tiny:0.0.204@sha256:93f09329da5a6e8c2644cf5ea12de165064d72358cc7de5d8bac6d1c886335cf
   - name: builder
-    image: docker.io/paketobuildpacks/ubuntu-noble-builder:0.0.203@sha256:ba79c24b55830210fc5ee06768237ab989dbaeec36adb60a986bcb8e70e4d7cd
+    image: docker.io/paketobuildpacks/ubuntu-noble-builder:0.0.210@sha256:ea79407c2571dfd73928ec719984358ec4fc4b02688c187fd94fdd3d7e65b648
   - name: run-tiny
-    image: docker.io/paketobuildpacks/ubuntu-noble-run-tiny:0.0.143@sha256:ab5827686b2c57966c84c3bf9c395fffe848175a561a648e45cb75fc797bbd11
+    image: docker.io/paketobuildpacks/ubuntu-noble-run-tiny:0.0.153@sha256:b5aacecc8b049f54f683ff988db2ea0ae9a523873c12b15296ebbd39c6fb115a
   - name: run-static
-    image: docker.io/paketobuildpacks/ubuntu-noble-run-static:0.0.143@sha256:6243141ce5550034ba21a76c0b6ea9fd636b5b43c34092a391c2e12aa1673aa5
+    image: docker.io/paketobuildpacks/ubuntu-noble-run-static:0.0.153@sha256:57111cefe8b22c6b1962a3cc8cb594f9336560c912c533a48538bb5fbaf6c9e8
   - name: run-base
-    image: docker.io/paketobuildpacks/ubuntu-noble-run:0.0.143@sha256:23f6b39aa1ed203dadb785399c1b9b5cbefdf14f27432c731394bdaa94f3f12d
+    image: docker.io/paketobuildpacks/ubuntu-noble-run:0.0.153@sha256:a086fb769323e8b2d888ad2ae8f66111c4710c174e66cc6c697e9d9333f738d0
