@@ -23,8 +23,14 @@ jobs:
           # release-candidate-version reads the commit history and tags.
           fetch-depth: 0
 
+      - name: Test the retired-token check
+        run: bash tests/test-check-no-release-token.sh
+
+      - name: No workflow uses the retired personal release token
+        run: bash check-no-release-token.sh
+
       - name: Shellcheck
-        run: shellcheck -x release-lib.sh build-image/*.sh tests/*.sh
+        run: shellcheck -x release-lib.sh check-no-release-token.sh build-image/*.sh tests/*.sh
 
       - name: Test release-lib.sh
         run: bash tests/test-release-lib.sh
