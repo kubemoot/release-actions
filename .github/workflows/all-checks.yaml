@@ -1,6 +1,6 @@
 # The one required check for a pull request. It waits for every other check run on the
 # pull request's commit (CI, CodeQL, DCO, and whichever path-filtered workflows the change
-# started) and passes only when all of them passed or were skipped, so a repository with
+# started) and passes only when all of them passed, were skipped or were neutral, so a repository with
 # path-filtered CI can require a single check that always runs. Auto-merge waits on it.
 #
 # Call it from each repository:
@@ -10,9 +10,20 @@
 #     pull_request:
 #   permissions:
 #     checks: read
+#     statuses: read
 #   jobs:
 #     all-checks:
 #       uses: kubemoot/release-actions/.github/workflows/all-checks.yaml@<sha> # vX.Y.Z
+#
+# The wait action keeps one check run per name (the latest to start), so two jobs that share
+# a name hide each other: a passing "test" masks a failed "test". The last step therefore
+# waits until every check run and status on the commit has settled (it polls; the deadline is
+# only a safety net that fails closed), then fails on any that is not success, skipped or
+# neutral, and
+# fails when two workflows produce check runs with the same name so the collision is fixed at
+# its source. The collision check reads the Actions runs list with no extra permission, which
+# works for public repositories only; a private repository would need actions: read granted by
+# the caller.
 #
 # The required status checks are then "all-checks / all-checks" and "CodeQL".
 name: All Checks
@@ -22,9 +33,12 @@ on:
 
 permissions:
   checks: read
+  statuses: read
 
 jobs:
   all-checks:
+    env:
+      IGNORE_PATTERN: ^((all-checks / )?all-checks|CodeQL)$
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -40,4 +54,73 @@ jobs:
           # analyze; this action counts neutral as failed, so CodeQL is required on its own
           # (GitHub's required checks accept neutral and block on failure). The CodeQL
           # analysis jobs are still waited for here.
-          ignore_pattern: ^((all-checks / )?all-checks|CodeQL)$
+          ignore_pattern: ${{ env.IGNORE_PATTERN }}
+
+      - name: Wait for every check to settle, then fail on any unsuccessful or duplicate-named check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Seconds between polls, and the safety-net deadline (the job timeout is longer).
+          # The normal path ends when every check has settled, never at the deadline.
+          POLL_INTERVAL: "30"
+          DEADLINE: "4800"
+        run: |
+          set -euo pipefail
+          fetch() {
+            runs=$(gh api --paginate "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" \
+              --jq '.check_runs[] | {name, status, conclusion, app: .app.slug,
+                run_id: ((.details_url // "") | capture("/actions/runs/(?<id>[0-9]+)").id? // null)}' | jq -s '.')
+            statuses=$(gh api --paginate "repos/${REPO}/commits/${SHA}/status?per_page=100" \
+              --jq '.statuses[] | {name: .context, state}' | jq -s '.')
+            workflows=$(gh api --paginate "repos/${REPO}/actions/runs?head_sha=${SHA}&per_page=100" \
+              --jq '.workflow_runs[] | {id: (.id | tostring), path}' | jq -s '.')
+          }
+          # Names come from other workflows: drop the characters that start a workflow command
+          # or a new log line.
+          clean='def clean: gsub("[\r\n]"; " ") | gsub("::"; "") | gsub("%"; "");'
+          # Check runs not yet completed and statuses still pending, one per line.
+          unfinished() {
+            jq -n -r --argjson runs "${runs}" --argjson statuses "${statuses}" \
+              --arg ignore "${IGNORE_PATTERN}" "${clean}"'
+              ($runs[] | select((.name | test($ignore) | not) and .status != "completed")
+                | "check run \(.name | clean) is \(.status)"),
+              ($statuses[] | select((.name | test($ignore) | not) and .state == "pending")
+                | "status \(.name | clean) is pending")'
+          }
+          deadline=$((SECONDS + DEADLINE))
+          while true; do
+            fetch
+            waiting=$(unfinished)
+            [ -z "${waiting}" ] && break
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "::error::Checks had not finished after ${DEADLINE}s on ${SHA}"
+              echo "${waiting}" | while IFS= read -r line; do echo "::error::${line}"; done
+              exit 1
+            fi
+            echo "Waiting for $(echo "${waiting}" | wc -l) unfinished checks"
+            sleep "${POLL_INTERVAL}"
+          done
+          # Settled. Only success, skipped and neutral pass. A workflow that runs on both push
+          # and pull_request makes one check run per event with the same name; that is one
+          # workflow, not a collision. A collision is one name produced by more than one
+          # workflow (or app).
+          report=$(jq -n -r --argjson runs "$runs" --argjson statuses "$statuses" \
+            --argjson workflows "$workflows" --arg ignore "${IGNORE_PATTERN}" "${clean}"'
+            ($workflows | map({key: .id, value: .path}) | from_entries) as $path
+            | ($runs | map(select(.name | test($ignore) | not))) as $r
+            | ($statuses | map(select(.name | test($ignore) | not))) as $s
+            | ($r | map(select(.conclusion | IN("success", "skipped", "neutral") | not)
+                | "unsuccessful check run: \(.name | clean) (\(.conclusion))")),
+              ($s | map(select(.state != "success")
+                | "unsuccessful status: \(.name | clean) (\(.state))")),
+              ($r | map(. + {source: (($path[.run_id // ""]) // .app)})
+                | group_by(.name)
+                | map(select((map(.source) | unique | length) > 1)
+                  | "duplicate check name: \(.[0].name | clean) (from \(map(.source) | unique | join(", ") | clean)); give each job a unique name"))
+            | .[]')
+          if [ -n "${report}" ]; then
+            echo "${report}" | while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          fi
+          echo "No unsuccessful or duplicate-named checks on ${SHA}"

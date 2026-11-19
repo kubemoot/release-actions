@@ -12,7 +12,7 @@ The release pipeline pieces that every Kubemoot repository shares, kept in one p
 | `build-image/` | Scripts that build an image in the cluster and push it to the registry: `build-image-buildpacks.sh` (Paketo buildpacks), `build-image-buildah.sh` (a Dockerfile with Buildah), the shared `build-image-lib.sh`, and the builder, run and Buildah images pinned by tag and digest in `buildpacks/images.yaml` and `buildah/images.yaml` |
 | `tests/test-release-lib.sh` | Tests for `release-lib.sh` |
 | `tests/test-build-image-*.sh` | Tests for the build-image scripts |
-| `.github/workflows/all-checks.yaml` | Reusable workflow: the one required check for a pull request; waits for every other check on the commit and passes only when all passed or were skipped |
+| `.github/workflows/all-checks.yaml` | Reusable workflow: the one required check for a pull request; waits for every other check on the commit and passes only when all passed or were skipped; it polls until every check and status has settled, then fails on any that is not success, skipped or neutral, and on two workflows producing the same check name (it reads the Actions runs list, which needs a public repository: a private repository would need `actions: read` granted by the caller). Callers must grant `statuses: read` next to `checks: read` in their `pull-request.yaml` permissions |
 
 ## Use
 
