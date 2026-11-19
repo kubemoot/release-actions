@@ -29,6 +29,9 @@ jobs:
       - name: Test release-lib.sh
         run: bash tests/test-release-lib.sh
 
+      - name: Test the all-checks gate step
+        run: bash tests/test-all-checks-gate.sh
+
       - name: Test the build-image scripts
         run: |
           bash tests/test-build-image-buildpacks.sh
