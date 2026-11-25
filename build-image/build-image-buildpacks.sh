@@ -32,6 +32,9 @@
 # Tags (see image_plan in build-image-lib.sh): main pushes :<sha>, which the release
 # retags, and :latest. Any other ref pushes only :branch-<sha>. Each ref keeps its own
 # build cache image, <repository>-buildcache:<ref>.
+# BUILD_NO_CACHE=1 builds without the cache image and without the previous image, so a
+# cache the registry cannot serve does not block the build (the caller sets it on a last
+# attempt, see kubemoot's retry-lost-build-pod.sh).
 # Env:
 #   REGISTRY (required)           the registry host, e.g. registry.example.org
 #   REGISTRY_HOST_IP (required)   the in-cluster address the host alias points at
@@ -67,6 +70,11 @@ if [ -n "${BUILD_BUILDPACKS:-}" ]; then
   done
 fi
 exec /cnb/lifecycle/creator "$@"'
+
+# cache_wanted: true unless BUILD_NO_CACHE=1 asks for a build without the cache image.
+cache_wanted() {
+  [ "${BUILD_NO_CACHE:-}" != 1 ]
+}
 
 # valid_env KEY=VALUE: true when KEY can be a /platform/env file name and a variable
 # name, and the whole pair is one line (BUILD_ENV carries one pair per line).
@@ -181,6 +189,7 @@ main() {
       *) images+=("$line") ;;
     esac
   done <<<"$plan"
+  cache_wanted || { cache=""; previous=""; }
 
   local here images_file builder run_image creator_json overrides buildpack_lines=""
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
