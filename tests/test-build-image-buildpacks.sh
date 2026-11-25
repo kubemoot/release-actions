@@ -79,6 +79,10 @@ check "extra images become -tag" '["-tag=reg.example/a:latest"]' "$(jq -c '[.[] 
 check "cache image passed" 1 "$(jq '[.[] | select(. == "-cache-image=reg.example/a-cache:main")] | length' <<<"$cargs")"
 check "previous image passed" 1 "$(jq '[.[] | select(. == "-previous-image=reg.example/a:latest")] | length' <<<"$cargs")"
 
+check "the cache is wanted by default" yes "$(cache_wanted && echo yes || echo no)"
+check "BUILD_NO_CACHE=1 turns the cache off" no "$(BUILD_NO_CACHE=1 cache_wanted && echo yes || echo no)"
+check "an empty BUILD_NO_CACHE keeps the cache" yes "$(BUILD_NO_CACHE='' cache_wanted && echo yes || echo no)"
+
 spec="$(pod_overrides pod1 builder@sha256:b "$cargs" $'BP_JVM_VERSION=25\n' reg.example 10.0.0.1 push-secret)"
 check "pod runs as non-root" true "$(jq '.spec.securityContext.runAsNonRoot and .spec.containers[0].securityContext.runAsNonRoot' <<<"$spec")"
 check "pod uid is the CNB user" 1001 "$(jq '.spec.securityContext.runAsUser' <<<"$spec")"
